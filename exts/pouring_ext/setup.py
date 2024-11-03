@@ -1,4 +1,4 @@
-"""Installation script for the 'ext_template' python package."""
+"""Installation script for the 'pouring_ext' python package."""
 
 import os
 import toml
@@ -18,8 +18,8 @@ INSTALL_REQUIRES = [
 
 # Installation operation
 setup(
-    name="ext_template",
-    packages=["ext_template"],
+    name="pouring_ext",
+    packages=["pouring_ext"],
     author=EXTENSION_TOML_DATA["package"]["author"],
     maintainer=EXTENSION_TOML_DATA["package"]["maintainer"],
     url=EXTENSION_TOML_DATA["package"]["repository"],
