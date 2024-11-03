@@ -456,6 +456,8 @@ class FrankaPouringEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # Refresh the intermediate values after the physics steps
         # This is just a placeholder, the actual reward will be inserted here. 
+
+        
         reward = torch.randn_like(self.env_ids, dtype=torch.float32)
 
         return reward

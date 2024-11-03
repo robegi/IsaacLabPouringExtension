@@ -67,28 +67,28 @@ class FluidObject():
                 solver_position_iterations=self._solverPositionIterations,
             )
 
-            # mtl_created = []
-            # omni.kit.commands.execute(
-            #     "CreateAndBindMdlMaterialFromLibrary",
-            #     mdl_name="OmniSurfacePresets.mdl",
-            #     mtl_name="OmniSurface_DeepWater",
-            #     mtl_created_list=mtl_created,
-            # )
-            # pbd_particle_material_path = mtl_created[0]
-            # omni.kit.commands.execute(
-            #     "BindMaterial", prim_path=self.particleSystemPath, material_path=pbd_particle_material_path
-            # )
+            mtl_created = []
+            omni.kit.commands.execute(
+                "CreateAndBindMdlMaterialFromLibrary",
+                mdl_name="OmniSurfacePresets.mdl",
+                mtl_name="OmniSurface_DeepWater",
+                mtl_created_list=mtl_created,
+            )
+            pbd_particle_material_path = mtl_created[0]
+            omni.kit.commands.execute(
+                "BindMaterial", prim_path=self.particleSystemPath, material_path=pbd_particle_material_path
+            )
 
-            # # Create a pbd particle material and set it on the particle system
-            # particleUtils.add_pbd_particle_material(
-            #     self.stage,
-            #     pbd_particle_material_path,
-            #     cohesion=10,
-            #     viscosity=0.91,
-            #     surface_tension=0.74,
-            #     friction=0.1,
-            # )
-            # physicsUtils.add_physics_material_to_prim(self.stage, particle_system.GetPrim(), pbd_particle_material_path)
+            # Create a pbd particle material and set it on the particle system
+            particleUtils.add_pbd_particle_material(
+                self.stage,
+                pbd_particle_material_path,
+                cohesion=10,
+                viscosity=0.91,
+                surface_tension=0.74,
+                friction=0.1,
+            )
+            physicsUtils.add_physics_material_to_prim(self.stage, particle_system.GetPrim(), pbd_particle_material_path)
 
             particle_system.CreateMaxVelocityAttr().Set(200)
 
