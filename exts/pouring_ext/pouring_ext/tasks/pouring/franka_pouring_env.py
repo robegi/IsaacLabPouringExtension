@@ -50,11 +50,12 @@ from sensor_msgs.msg import Image
 from omni.isaac.lab.sim import SimulationContext 
 import omni.replicator.core as rep
 from copy import deepcopy
+import time
 
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5*2  # 500 timesteps
+    episode_length_s = 8.3333  # 500 timesteps
     decimation = 2
     action_space = 4
     num_channels = 3 # Camera channels in the observations
@@ -369,7 +370,8 @@ class FrankaPouringEnv(DirectRLEnv):
         # ROS variables
         rospy.init_node('Isaac_image', anonymous=True)
         self.image_pub = rospy.Publisher("/camera/color/image_raw", Image, queue_size=5)
-        self.heat_map = None
+        self.heat_map_0 = torch.zeros((480, 480,3), device=self.device) # NOTE regardless of the camera dimensions, crop size of PourIt is 480
+        self.heat_map = torch.zeros_like(self.heat_map_0, device=self.device )
         rospy.Subscriber("/heat_map", Image, self.callback)
         self.cv_bridge = CvBridge()
         self.rate = rospy.Rate(2)
@@ -385,16 +387,17 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,3].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
-        # Imposed motions (TEMPORARY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
+        # # Imposed motions (TEMPORARY)
+        # self.deltas = torch.zeros_like(self.deltas)
+        # self.alphas = torch.zeros_like(self.alphas)
 
-        if (self.counter >= 10) & (self.counter < 20):
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+        # if (self.counter >= 10) & (self.counter < 20):
+        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
 
-        if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
+        # if self.counter == 50:
+        #     self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
         
+        # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
         #     particle_pos, vel = self.liquid.get_particles_position()
         #     torch.save(torch.tensor(particle_pos),"/home/roberto/LiquidTask/exts/liquid_task/liquid_task/tasks/liquid/direct_4/usd_models/particle_pos.pt")
@@ -519,25 +522,29 @@ class FrankaPouringEnv(DirectRLEnv):
             # Convert camera data and publish them in ROS
             image_ros = cv2.cvtColor(camera_data.numpy()[i], cv2.COLOR_RGB2BGR)
             image_ros = self.cv_bridge.cv2_to_imgmsg(image_ros, "bgr8")
-            self.image_pub.publish(image_ros)
+            self.image_pub.publish(image_ros)   
 
-            if self.heat_map is not None:
-                # Save output from PourIt
-                rgb_heatmap = cv2.cvtColor(self.heat_map.numpy()[i], cv2.COLOR_BGR2RGB)
-                self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
+            # Wait until PourIt processes the image
+            while torch.equal(self.heat_map, self.heat_map_0):
+                time.sleep(0.001)       
 
-                # Process output from pourit end only extract the heat map of the liquid
-                hsv = cv2.cvtColor(self.heat_map.numpy()[i], cv2.COLOR_BGR2HSV)
-                mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
-                processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
-                saved_image = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
+            # Save output from PourIt
+            rgb_heatmap = cv2.cvtColor(self.heat_map.numpy(), cv2.COLOR_BGR2RGB)
+            self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
 
-                # Save image in output folder
-                self.save_image(saved_image/255.0, self.index_image, i, "processed")
-                self.index_image +=1 
+            # Process output from pourit end only extract the heat map of the liquid
+            hsv = cv2.cvtColor(self.heat_map.numpy(), cv2.COLOR_BGR2HSV)
+            mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
+            processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
-            #self.rate.sleep()
+            # Save processed image in output folder
+            saved_image = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
+            self.save_image(saved_image/255.0, self.index_image, i, "processed")
 
+            # Store current heat map to check later
+            self.heat_map_0 = self.heat_map
+
+        self.index_image +=1 
         camera_data = camera_data/255.0
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         camera_data -= mean_tensor
@@ -581,7 +588,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def callback(self, image):
         _image_rgb = CvBridge().imgmsg_to_cv2(image, desired_encoding="bgr8")
-        self.heat_map = torch.unsqueeze(torch.tensor(deepcopy(_image_rgb), device=self.device), 0)
+        self.heat_map = torch.tensor(deepcopy(_image_rgb), device=self.device)
 
     def compute_reward(self, 
                        container: np.array, 
