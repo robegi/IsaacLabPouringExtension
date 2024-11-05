@@ -157,19 +157,20 @@ class FluidObject():
             visibility_attribute.Set("invisible")
 
 
-    def get_particles_position(self)->tuple[Gf.Vec3f, Gf.Vec3f]:
-        # Gets particles' positions and velocities and outputs them as tensors
-        particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath("envs/env_0/particles")))
-        particles_pos = particles.GetPointsAttr().Get()
-        particles_vel = particles.GetVelocitiesAttr().Get()
+    def get_particles_position(self, env_id: int)->tuple[np.array, np.array]:
+        # Gets particles' positions in the input environment and velocities and outputs them as arrays
+
+        particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath(f"envs/env_{env_id}/particles")))
+        particles_pos = np.array(particles.GetPointsAttr().Get())
+        particles_vel = np.array(particles.GetVelocitiesAttr().Get())
 
         return particles_pos, particles_vel
 
-    def set_particles_position(self, particles_pos:Gf.Vec3f, particles_vel:Gf.Vec3f, env_id:int):
+    def set_particles_position(self, particles_pos: np.array, particles_vel: np.array, env_id:int):
         # Sets the particles' position and velocities to the given arrays
         particles = UsdGeom.Points(self.stage.GetPrimAtPath(self.default_prim_path.AppendPath("envs/env_%d/particles" % env_id)))
-        particles_pos = particles.GetPointsAttr().Set(particles_pos)
-        particles_vel = particles.GetVelocitiesAttr().Set(particles_vel)
+        particles.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(particles_pos))
+        particles.GetVelocitiesAttr().Set(Vt.Vec3fArray.FromNumpy(particles_vel))
 
 
 

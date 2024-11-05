@@ -54,7 +54,7 @@ from copy import deepcopy
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5  # 500 timesteps
+    episode_length_s = 8.3333  # 500 timesteps
     decimation = 2
     action_space = 4
     num_channels = 3 # Camera channels in the observations
@@ -201,7 +201,12 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-     # Set target container as rigid object
+    # Set target container as rigid object
+    # Container data from original usd model
+    container_height = 0.12
+    container_radius = 0.15/2
+    container_base = 0.02
+
     container = RigidObjectCfg(
         prim_path="/World/envs/env_.*/Container",
         init_state=RigidObjectCfg.InitialStateCfg(pos=spawn_pos_container, rot=[1, 0, 0, 0]),
@@ -230,18 +235,9 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     liquidCfg.particle_mass = 0.001
     liquidCfg.particleSpacing = 0.005
 
-    # Scales
-    action_scale = 7.5
-    dof_velocity_scale = 0.1
-
     # reward scales
-    dist_reward_scale = 2.0
-    rot_reward_scale = 0.5
-    around_handle_reward_scale = 0.0
-    open_reward_scale = 7.5
-    action_penalty_scale = 0.01
-    finger_dist_reward_scale = 0.0
-    finger_close_reward_scale = 10.0
+    inside_weight = 1.0
+    outside_weight = -1.0
 
 
 
@@ -298,8 +294,10 @@ class FrankaPouringEnv(DirectRLEnv):
                              lower_pos = self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
         self.liquid_init_pos = torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos.pt")
-        self.liquid_init_pos = Vt.Vec3fArray.FromNumpy(self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*[0, 0, 0.01])
-        self.liquid_init_vel = Vt.Vec3fArray.FromNumpy(np.zeros_like(self.liquid_init_pos))
+        self.liquid_num_particles = self.liquid_init_pos.size(0)
+        self.liquid_init_pos = self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
+        self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
+        self.reward = np.zeros((self.num_envs))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -392,7 +390,7 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = torch.zeros_like(self.alphas)
 
         if self.counter == 10:
-            self.deltas = torch.ones_like(self.deltas)*(-0.1)        
+            self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, -0.2,-0.2])        
 
         if self.counter == 50:
             self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
@@ -438,9 +436,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Joint positions to give to the robot as command
         self.joint_pos_des = torch.clamp(joint_pos_des, self.robot_dof_lower_limits[:7], self.robot_dof_upper_limits[:7])
-        print(joint_pos)
-        # pos, vel = self.liquid.get_particles_position()
-        # print(pos)
+
 
     def _apply_action(self):
         self._robot.set_joint_position_target(self.joint_pos_des, joint_ids=self._robot_arm_idx)
@@ -455,12 +451,23 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         # Refresh the intermediate values after the physics steps
-        # This is just a placeholder, the actual reward will be inserted here. 
 
-        
-        reward = torch.randn_like(self.env_ids, dtype=torch.float32)
+        # Compute reward for each environment
+        for i in range (self.num_envs):
+            pos, vel = self.liquid.get_particles_position(i)
+            container_pos = self._container.data.root_pos_w[i].numpy()- self.scene.env_origins[i].numpy()
 
-        return reward
+            self.reward[i] = self.compute_reward(container=container_pos,
+                                particles=pos,
+                                limit_height=self.cfg.container_height,
+                                inside_weight=self.cfg.inside_weight,
+                                outside_weight=self.cfg.outside_weight,
+                                radius=self.cfg.container_radius,
+                                base_height=self.cfg.container_base,
+                                num_particles=self.liquid_num_particles)
+
+        print(self.reward)
+        return torch.tensor(self.reward, device=self.device)
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
@@ -503,19 +510,23 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
+        # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
-        print(camera_data.size())
         self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
         
         # Publish image in ROS and process it
         for i in range(camera_data.size(dim=0)):
+            # Convert camera data and publish them in ROS
             image_ros = cv2.cvtColor(camera_data.numpy()[i], cv2.COLOR_RGB2BGR)
             image_ros = self.cv_bridge.cv2_to_imgmsg(image_ros, "bgr8")
             self.image_pub.publish(image_ros)
 
             if self.heat_map is not None:
+                # Save output from PourIt
                 rgb_heatmap = cv2.cvtColor(self.heat_map.numpy()[i], cv2.COLOR_BGR2RGB)
                 self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
+
+                # Process output from pourit end only extract the heat map of the liquid
                 hsv = cv2.cvtColor(self.heat_map.numpy()[i], cv2.COLOR_BGR2HSV)
                 mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
                 processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
@@ -525,7 +536,7 @@ class FrankaPouringEnv(DirectRLEnv):
                 self.save_image(saved_image/255.0, self.index_image, i, "processed")
                 self.index_image +=1 
 
-            self.rate.sleep()
+            #self.rate.sleep()
 
         camera_data = camera_data/255.0
         mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
@@ -571,5 +582,49 @@ class FrankaPouringEnv(DirectRLEnv):
     def callback(self, image):
         _image_rgb = CvBridge().imgmsg_to_cv2(image, desired_encoding="bgr8")
         self.heat_map = torch.unsqueeze(torch.tensor(deepcopy(_image_rgb), device=self.device), 0)
+
+    def compute_reward(self, 
+                       container: np.array, 
+                       particles: np.array, 
+                       limit_height: float, 
+                       inside_weight: float, 
+                       outside_weight: float, 
+                       radius: float,
+                       base_height: float,
+                       num_particles: int):
+            """
+            Computes the reward by considering the fraction of particles inside the target container and outside of it
+            """
+            # Only considers particles below a certain limit height, which is ideally the target container's height
+            index = np.where(particles[:,2]<=limit_height)
+
+            x = particles[index,0]
+            y = particles[index,1]
+            z = particles[index,2]
+
+            x_0 = container[0]
+            y_0 = container[1]
+
+            # Calculates particles inside if they are inside the round container's radius and above the base height (probably unnecessary)
+            index_inside = np.where(((x**2-x_0**2)+(y**2-y_0**2) < radius**2) & (z>=base_height))
+            particles_inside = np.size(index_inside, 1)
+
+            # Calculates particles outside if they are outside the round container's radius
+            index_outside = np.where((x**2-x_0**2)+(y**2-y_0**2) >= radius**2)
+            particles_outside = np.size(index_outside, 1)
+
+            # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
+            reward_in = inside_weight*particles_inside/num_particles
+            reward_out = outside_weight*particles_outside/num_particles
+
+            reward_tot = reward_in + reward_out
+
+            return reward_tot
+
+
+
+
+
+
 
     
