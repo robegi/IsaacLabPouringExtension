@@ -54,7 +54,7 @@ from copy import deepcopy
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333  # 500 timesteps
+    episode_length_s = 8.3333/5*2  # 500 timesteps
     decimation = 2
     action_space = 4
     num_channels = 3 # Camera channels in the observations
@@ -149,8 +149,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
         ),
-        width=480,
-        height=480,
+        width=80,
+        height=80,
     )
     observation_space = [camera.height, camera.width, num_channels]
     write_image_to_file = False
@@ -204,7 +204,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # Set target container as rigid object
     # Container data from original usd model
     container_height = 0.12
-    container_radius = 0.15/2
+    container_radius = 0.17/2
     container_base = 0.02
 
     container = RigidObjectCfg(
@@ -389,11 +389,11 @@ class FrankaPouringEnv(DirectRLEnv):
         self.deltas = torch.zeros_like(self.deltas)
         self.alphas = torch.zeros_like(self.alphas)
 
-        if self.counter == 10:
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, -0.2,-0.2])        
+        if (self.counter >= 10) & (self.counter < 20):
+            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
 
         if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+            self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
         
         # if self.counter == 200:
         #     particle_pos, vel = self.liquid.get_particles_position()
@@ -455,6 +455,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Compute reward for each environment
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
+
             container_pos = self._container.data.root_pos_w[i].numpy()- self.scene.env_origins[i].numpy()
 
             self.reward[i] = self.compute_reward(container=container_pos,
@@ -463,7 +464,6 @@ class FrankaPouringEnv(DirectRLEnv):
                                 inside_weight=self.cfg.inside_weight,
                                 outside_weight=self.cfg.outside_weight,
                                 radius=self.cfg.container_radius,
-                                base_height=self.cfg.container_base,
                                 num_particles=self.liquid_num_particles)
 
         print(self.reward)
@@ -590,7 +590,6 @@ class FrankaPouringEnv(DirectRLEnv):
                        inside_weight: float, 
                        outside_weight: float, 
                        radius: float,
-                       base_height: float,
                        num_particles: int):
             """
             Computes the reward by considering the fraction of particles inside the target container and outside of it
@@ -605,17 +604,19 @@ class FrankaPouringEnv(DirectRLEnv):
             x_0 = container[0]
             y_0 = container[1]
 
-            # Calculates particles inside if they are inside the round container's radius and above the base height (probably unnecessary)
-            index_inside = np.where(((x**2-x_0**2)+(y**2-y_0**2) < radius**2) & (z>=base_height))
+            # Calculates particles inside if they are inside the round container's radius 
+            index_inside = np.where(((x-x_0)**2+(y-y_0)**2 < radius**2))
             particles_inside = np.size(index_inside, 1)
 
             # Calculates particles outside if they are outside the round container's radius
-            index_outside = np.where((x**2-x_0**2)+(y**2-y_0**2) >= radius**2)
+            index_outside = np.where((x-x_0)**2+(y-y_0)**2 >= radius**2)
             particles_outside = np.size(index_outside, 1)
 
             # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
             reward_in = inside_weight*particles_inside/num_particles
             reward_out = outside_weight*particles_outside/num_particles
+            # print(reward_in)
+            # print(reward_out)
 
             reward_tot = reward_in + reward_out
 
