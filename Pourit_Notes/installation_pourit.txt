@@ -1,0 +1,27 @@
+Note installazione PourIt
+
+1) ython 3.8 (quando si installa conda digita 3.8, la versione finale dovrebbe essere 3.8.20)
+2) Torch e torchvision con versione cu110 NON 101
+3) scrivere ln -sf /usr/lib/x86_64-linux-gnu/libffi.so.7 ~/anaconda3/envs/[your env name here]/lib/libffi.so.7 nel terminale, metti il nome dell'environment al posto delle parentesi quadre
+4) scrivere pip install netifaces
+
+
+# In aggiunta, lista dei requirements:
+
+mmcv_full==1.2.7
+matplotlib==3.3.3
+tqdm==4.46.1
+omegaconf==2.0.0
+numpy==1.18.5
+timm==0.3.2
+imageio==2.9.0
+mmcv==1.3.17
+Pillow==8.4.0
+scikit_learn==0.24.2
+tensorboard
+rospkg
+opencv-python==4.6.0.66
+scikit-image
+torch==1.7.1+cu110
+torchvision==0.8.2+cu110
+-f https://download.pytorch.org/whl/torch_stable.html

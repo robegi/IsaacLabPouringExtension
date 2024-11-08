@@ -135,13 +135,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # camera
-    # camera_pos = (1.5, 0.0, 1)
-    # camera_rot = (5.9146e-17, -2.5882e-01, -1.5848e-17,  9.6593e-01)
-    # camera_pos = (0.5, -1.5, 1.2)
-    # camera_rot = ( 0.6830, -0.1830,  0.1830,  0.6830)
-    camera_pos = (1.5, 1.0, 1)
-    camera_rot = (-0.3696, -0.2391, -0.0990,  0.8924)
-    data_types_list = ["rgb","semantic_segmentation","instance_segmentation_fast","instance_id_segmentation_fast",'depth','normals']
+    camera_pos = (1.2, 0.59, 0.5)
+    camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
 
     camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
@@ -150,10 +145,12 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
         ),
-        width=80,
-        height=80,
+        width=480,
+        height=480,
     )
-    observation_space = [camera.height, camera.width, num_channels]
+    # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
+    # NOTE PourIt always crops the image to 480x480x3, so use that as observations
+    observation_space = [480, 480, 3]
     write_image_to_file = False
 
     # Joint names to actuate along the arm
@@ -367,11 +364,12 @@ class FrankaPouringEnv(DirectRLEnv):
             colorize_semantic_segmentation=self._camera.cfg.colorize_semantic_segmentation,
         )
 
-        # ROS variables
+        # Vision and ROS variables
         rospy.init_node('Isaac_image', anonymous=True)
         self.image_pub = rospy.Publisher("/camera/color/image_raw", Image, queue_size=5)
         self.heat_map_0 = torch.zeros((480, 480,3), device=self.device) # NOTE regardless of the camera dimensions, crop size of PourIt is 480
         self.heat_map = torch.zeros_like(self.heat_map_0, device=self.device )
+        self.obs = torch.zeros((self.num_envs, 480, 480, 3), device = self.device)
         rospy.Subscriber("/heat_map", Image, self.callback)
         self.cv_bridge = CvBridge()
         self.rate = rospy.Rate(2)
@@ -387,15 +385,15 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,3].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
-        # # Imposed motions (TEMPORARY)
-        # self.deltas = torch.zeros_like(self.deltas)
-        # self.alphas = torch.zeros_like(self.alphas)
+        # Imposed motions (TEMPORARY)
+        self.deltas = torch.zeros_like(self.deltas)
+        self.alphas = torch.zeros_like(self.alphas)
 
-        # if (self.counter >= 10) & (self.counter < 20):
-        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+        if (self.counter >= 10) & (self.counter < 20):
+            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
 
-        # if self.counter == 50:
-        #     self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
+        if self.counter == 50:
+            self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
         
         # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
@@ -537,6 +535,9 @@ class FrankaPouringEnv(DirectRLEnv):
             mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
             processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
+            # Use this as observation
+            self.obs[i] = torch.tensor(processed_image, device = self.device)
+
             # Save processed image in output folder
             saved_image = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
             self.save_image(saved_image/255.0, self.index_image, i, "processed")
@@ -545,10 +546,10 @@ class FrankaPouringEnv(DirectRLEnv):
             self.heat_map_0 = self.heat_map
 
         self.index_image +=1 
-        camera_data = camera_data/255.0
-        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
-        camera_data -= mean_tensor
-        observations = {"policy": camera_data.clone()}
+        self.obs = self.obs/255.0
+        mean_tensor = torch.mean(self.obs, dim=(1, 2), keepdim=True)
+        self.obs -= mean_tensor
+        observations = {"policy": self.obs.clone()}
 
         return observations
 
