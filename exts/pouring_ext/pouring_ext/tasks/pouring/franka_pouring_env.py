@@ -42,7 +42,6 @@ import carb.settings
 import os
 from omni.isaac.lab.utils import convert_dict_to_backend
 import cv2
-import rospy
 from std_msgs.msg import String
 import matplotlib as plt
 from cv_bridge import CvBridge
@@ -51,6 +50,11 @@ from omni.isaac.lab.sim import SimulationContext
 import omni.replicator.core as rep
 from copy import deepcopy
 import time
+
+import argparse
+from omegaconf import OmegaConf
+
+from .pourit_utils.predictor import LiquidPredictor
 
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
@@ -364,15 +368,27 @@ class FrankaPouringEnv(DirectRLEnv):
             colorize_semantic_segmentation=self._camera.cfg.colorize_semantic_segmentation,
         )
 
-        # Vision and ROS variables
-        rospy.init_node('Isaac_image', anonymous=True)
-        self.image_pub = rospy.Publisher("/camera/color/image_raw", Image, queue_size=5)
-        self.heat_map_0 = torch.zeros((480, 480,3), device=self.device) # NOTE regardless of the camera dimensions, crop size of PourIt is 480
-        self.heat_map = torch.zeros_like(self.heat_map_0, device=self.device )
+        # PourIt model
+
+        # Pourit configuration
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--config", default=f"{self.cfg.CURRENT_PATH}/pourit_utils/configs/pourit_seen_ours.yaml", type=str, help="config")
+        parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
+        parser.add_argument("--seg_detach", action="store_true", help="detach seg")
+        parser.add_argument("--work_dir", default=None, type=str, help="work_dir")
+        parser.add_argument("--crop_size", default=480, type=int, help="crop_size")
+        parser.add_argument("--model_path", default=f"{self.cfg.CURRENT_PATH}/pourit_utils/checkpoints/iter_014000.pth", type=str, help="model_path")
+
+        self.args = parser.parse_args()
+
+        self.predictor_cfg = OmegaConf.load(self.args.config)
+        self.predictor_cfg.dataset.crop_size = self.args.crop_size
+        if self.args.work_dir is not None:
+            self.predictor_cfg.work_dir.dir = self.args.work_dir
+
+        self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
+
         self.obs = torch.zeros((self.num_envs, 480, 480, 3), device = self.device)
-        rospy.Subscriber("/heat_map", Image, self.callback)
-        self.cv_bridge = CvBridge()
-        self.rate = rospy.Rate(2)
 
 
     # pre-physics step calls
@@ -513,37 +529,29 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
-        self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
+        # self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
         
         # Publish image in ROS and process it
         for i in range(camera_data.size(dim=0)):
-            # Convert camera data and publish them in ROS
-            image_ros = cv2.cvtColor(camera_data.numpy()[i], cv2.COLOR_RGB2BGR)
-            image_ros = self.cv_bridge.cv2_to_imgmsg(image_ros, "bgr8")
-            self.image_pub.publish(image_ros)   
-
-            # Wait until PourIt processes the image
-            while torch.equal(self.heat_map, self.heat_map_0):
-                time.sleep(0.001)       
+            # Process the image using PourIt
+            pourit_output = self.predictor.inference(camera_data.numpy()[i])
 
             # Save output from PourIt
-            rgb_heatmap = cv2.cvtColor(self.heat_map.numpy(), cv2.COLOR_BGR2RGB)
-            self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
+            rgb_heatmap = cv2.cvtColor(pourit_output, cv2.COLOR_BGR2RGB)
+            # self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
 
             # Process output from pourit end only extract the heat map of the liquid
-            hsv = cv2.cvtColor(self.heat_map.numpy(), cv2.COLOR_BGR2HSV)
+            hsv = cv2.cvtColor(pourit_output, cv2.COLOR_BGR2HSV)
             mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
             processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
             # Use this as observation
             self.obs[i] = torch.tensor(processed_image, device = self.device)
+            # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
 
             # Save processed image in output folder
             saved_image = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
-            self.save_image(saved_image/255.0, self.index_image, i, "processed")
-
-            # Store current heat map to check later
-            self.heat_map_0 = self.heat_map
+            # self.save_image(saved_image/255.0, self.index_image, i, "processed")
 
         self.index_image +=1 
         self.obs = self.obs/255.0
@@ -587,9 +595,6 @@ class FrankaPouringEnv(DirectRLEnv):
 
         save_images_to_file(file, "%s/output/camera/%s_%d_%d.png"%(self.cfg.CURRENT_PATH, name, index_env,index_image))
 
-    def callback(self, image):
-        _image_rgb = CvBridge().imgmsg_to_cv2(image, desired_encoding="bgr8")
-        self.heat_map = torch.tensor(deepcopy(_image_rgb), device=self.device)
 
     def compute_reward(self, 
                        container: np.array, 
