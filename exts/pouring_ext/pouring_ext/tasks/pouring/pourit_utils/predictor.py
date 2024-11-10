@@ -72,12 +72,12 @@ class LiquidPredictor():
 
     @torch.no_grad()
     def inference(self, input_image):
-
+        
         img = ZeroPaddingResizeCV(input_image, size=(self.cfg.dataset.crop_size, self.cfg.dataset.crop_size))
         img = transforms.normalize_img(img)
-        img = np.transpose(img, (2, 0, 1))
-        img_tensor = torch.tensor(img).unsqueeze(0)
-        img_tensor_cuda = img_tensor.to(self.device)
+        img = np.transpose(img, (0, 3, 1, 2))
+        img_tensor = torch.tensor(img)
+        img_tensor_cuda = img_tensor.to('cuda')
         img_denorm_tensor = denormalize_img(img_tensor)
 
         torch.cuda.synchronize()
@@ -89,7 +89,6 @@ class LiquidPredictor():
 
         torch.cuda.synchronize()
         end_time = time.time()
-        print('Elapsed time = {:.0f} Hz \r'.format(1./(end_time - start_time)), end='', flush=True)
 
         valid_cam = valid_cam.cpu().float()
         valid_cam = valid_cam.max(dim=1)[0]
@@ -100,8 +99,7 @@ class LiquidPredictor():
         cam_cmap_tensor = cam_heatmap_tensor.permute([0, 3, 1, 2]) #(1,3,512,512)
         cam_img = cam_cmap_tensor*0.5 + img_denorm_tensor[:, [2,1,0] ,:, :]*0.5
 
-        cam_img_show = np.transpose(cam_img.squeeze().numpy(), (1,2,0)).astype(np.uint8)
-        cam_show = np.transpose(cam_cmap_tensor.squeeze().numpy(), (1,2,0)).astype(np.uint8)
+        cam_img_show = np.transpose(cam_img.numpy(), (0,2,3,1)).astype(np.uint8)
 
         return cam_img_show
 

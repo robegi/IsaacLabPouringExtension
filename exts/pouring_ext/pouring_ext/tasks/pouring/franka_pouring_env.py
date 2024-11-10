@@ -155,7 +155,6 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
     # NOTE PourIt always crops the image to 480x480x3, so use that as observations
     observation_space = [480, 480, 3]
-    write_image_to_file = False
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -529,29 +528,40 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
-        # self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
+
+        # Choose whether to save the images or not
+        images_are_being_saved = False
+
+        if images_are_being_saved:
+            self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
+
+        # Process the image using PourIt
+        pourit_output = self.predictor.inference(camera_data.numpy())
         
-        # Publish image in ROS and process it
-        for i in range(camera_data.size(dim=0)):
-            # Process the image using PourIt
-            pourit_output = self.predictor.inference(camera_data.numpy()[i])
+        # # Process image
+        # for i in self.env_ids:
 
-            # Save output from PourIt
-            rgb_heatmap = cv2.cvtColor(pourit_output, cv2.COLOR_BGR2RGB)
-            # self.save_image(rgb_heatmap/255.0, self.index_image, i, "heatmap")
+        #     # Process output from pourit end only extract the heat map of the liquid
+        #     hsv = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2HSV)
+        #     mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
+        #     processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
-            # Process output from pourit end only extract the heat map of the liquid
-            hsv = cv2.cvtColor(pourit_output, cv2.COLOR_BGR2HSV)
-            mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
-            processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
+        #     # Use this as observation
+        #     self.obs[i] = torch.tensor(processed_image, device = self.device)
+        #     # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
 
-            # Use this as observation
-            self.obs[i] = torch.tensor(processed_image, device = self.device)
-            # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
+        #     # Save processed image in output folder
+        #     if images_are_being_saved:
+        #         # Convert output from PourIt to rgb for saving
+        #         rgb_heatmap_saved = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2RGB)
 
-            # Save processed image in output folder
-            saved_image = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
-            # self.save_image(saved_image/255.0, self.index_image, i, "processed")
+        #         # Convert processed image in rgb for saving
+        #         processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
+
+        #         # Save both
+        #         self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
+        #         self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
+
 
         self.index_image +=1 
         self.obs = self.obs/255.0
@@ -593,7 +603,7 @@ class FrankaPouringEnv(DirectRLEnv):
         if not torch.is_tensor(file):
             file = torch.unsqueeze(torch.tensor(file, device=self.device),0)
 
-        save_images_to_file(file, "%s/output/camera/%s_%d_%d.png"%(self.cfg.CURRENT_PATH, name, index_env,index_image))
+        save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
 
 
     def compute_reward(self, 
