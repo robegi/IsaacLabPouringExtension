@@ -10,7 +10,7 @@
 
 ## Overview
 
-Isaac Lab extension for performing a transparent liquid pouring task using RL and image processing thwough [PourIt](https://github.com/hetolin/PourIt).
+Isaac Lab extension for performing a transparent liquid pouring task using RL and image processing through [PourIt](https://github.com/hetolin/PourIt).
 Based on the Isaac Lab [extension template](https://github.com/isaac-sim/IsaacLabExtensionTemplate).
 
 **Work In Progress...**
@@ -22,17 +22,14 @@ Based on the Isaac Lab [extension template](https://github.com/isaac-sim/IsaacLa
 
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/source/setup/installation/index.html). We recommend using the conda installation as it simplifies calling Python scripts from the terminal.
 
-- Clone the repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+- Clone the repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory) and use he access token (this is a private repository for now):
 
 ```bash
 # Option 1: HTTPS
-git clone https://github.com/isaac-sim/IsaacLabExtensionTemplate.git
-
-# Option 2: SSH
-git clone git@github.com:isaac-sim/IsaacLabExtensionTemplate.git
+git clone https://github.com/robegi/IsaacLabPouringExtension.git
 ```
 
-- Throughout the repository, the name `pouring_ext` only serves as an example and we provide a script to rename all the references to it automatically:
+- To rename from `pouring_ext` to a custom name:
 
 ```bash
 # Enter the repository
@@ -53,13 +50,11 @@ Now the extension can be executed from any Isaac Lab script by importing it:
 import pouring_ext # Custom extension
 ```
 
-To execute skrl to train the model, use:
+**Example**: to execute skrl to train the model, use:
 
 ```bash
 # Enter Isaac Lab folder
 cd IsaacLab
-# In a conda environment with PourIt installed, run
-python demo.py
 # Execute the training script, after importing the extensions
 ./isaaclab.sh -p source/standalone/workflows/skrl/train.py --task Isaac-Franka-Pouring-Direct-v0 --num_envs 1 --device cpu --disable_fabric --enable_cameras 
 ```
