@@ -77,7 +77,7 @@ class LiquidPredictor():
         img = transforms.normalize_img(img)
         img = np.transpose(img, (0, 3, 1, 2))
         img_tensor = torch.tensor(img)
-        img_tensor_cuda = img_tensor.to('cuda')
+        img_tensor_cuda = img_tensor.to(self.device)
         img_denorm_tensor = denormalize_img(img_tensor)
 
         torch.cuda.synchronize()

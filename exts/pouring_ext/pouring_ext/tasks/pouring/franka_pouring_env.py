@@ -59,7 +59,7 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333  # 500 timesteps
+    episode_length_s = 8.3333/5  # 500 timesteps
     decimation = 2
     action_space = 4
     num_channels = 3 # Camera channels in the observations
@@ -290,6 +290,11 @@ class FrankaPouringEnv(DirectRLEnv):
         settings = carb.settings.get_settings()
         settings.set("/rtx/translucency/enabled", True)
 
+        # Set partial rendering
+        Sim_Context = SimulationContext()
+        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        Sim_Context.set_render_mode(mode=rendermode)
+
         # Liquid, spawns it and gets the initial positions and velocities
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, 
                              lower_pos = self.cfg.spawn_pos_fluid)
@@ -408,7 +413,7 @@ class FrankaPouringEnv(DirectRLEnv):
             self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
 
         if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
+            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
@@ -472,7 +477,7 @@ class FrankaPouringEnv(DirectRLEnv):
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
 
-            container_pos = self._container.data.root_pos_w[i].numpy()- self.scene.env_origins[i].numpy()
+            container_pos = self._container.data.root_pos_w[i].cpu().numpy()- self.scene.env_origins[i].cpu().numpy()
 
             self.reward[i] = self.compute_reward(container=container_pos,
                                 particles=pos,
@@ -530,40 +535,41 @@ class FrankaPouringEnv(DirectRLEnv):
         camera_data = self._camera.data.output[self.data_type]
 
         # Choose whether to save the images or not
-        images_are_being_saved = False
+        images_are_being_saved = True
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
 
         # Process the image using PourIt
-        pourit_output = self.predictor.inference(camera_data.numpy())
+        pourit_output = self.predictor.inference(camera_data.cpu().numpy())
         
-        # # Process image
-        # for i in self.env_ids:
+        # Process image
+        for i in self.env_ids:
 
-        #     # Process output from pourit end only extract the heat map of the liquid
-        #     hsv = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2HSV)
-        #     mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
-        #     processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
+            # Process output from pourit end only extract the heat map of the liquid
+            hsv = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2HSV)
+            mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
+            processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
-        #     # Use this as observation
-        #     self.obs[i] = torch.tensor(processed_image, device = self.device)
-        #     # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
+            # Use this as observation
+            self.obs[i] = torch.tensor(processed_image, device = self.device)
+            # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
 
-        #     # Save processed image in output folder
-        #     if images_are_being_saved:
-        #         # Convert output from PourIt to rgb for saving
-        #         rgb_heatmap_saved = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2RGB)
+            # Save processed image in output folder
+            if images_are_being_saved:
+                # Convert output from PourIt to rgb for saving
+                rgb_heatmap_saved = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2RGB)
 
-        #         # Convert processed image in rgb for saving
-        #         processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
+                # Convert processed image in rgb for saving
+                processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
 
-        #         # Save both
-        #         self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
-        #         self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
+                # Save both
+                self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
+                self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
 
 
         self.index_image +=1 
+        # self.obs = torch.tensor(pourit_output, device = self.device)
         self.obs = self.obs/255.0
         mean_tensor = torch.mean(self.obs, dim=(1, 2), keepdim=True)
         self.obs -= mean_tensor
