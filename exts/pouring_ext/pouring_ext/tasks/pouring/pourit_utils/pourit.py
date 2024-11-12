@@ -29,14 +29,15 @@ def ZeroPaddingResizeCV(img, size=(512, 512), interpolation=None):
     new_h = int(ih * scale + 0.5)
 
     #cv2.resize: (H,W,1)->(H,W);(H,W,3)->(H,W,3)
+    img_resized = np.zeros((n, new_w, new_h, ic))
     for i in range(isize[0]):
-        img[i] = cv2.resize(img[i], (new_w, new_h), interpolation)
+        img_resized[i] = cv2.resize(img[i], (new_w, new_h), interpolation)
 
     if len(img.shape) == 2:
-        img = np.expand_dims(img, axis=2)
+        img_resized = np.expand_dims(img_resized, axis=2)
 
     new_img = np.zeros((n, h, w, ic), np.uint8)
-    new_img[:, (h-new_h)//2:(h+new_h)//2, (w-new_w)//2:(w+new_w)//2] = img
+    new_img[:, (h-new_h)//2:(h+new_h)//2, (w-new_w)//2:(w+new_w)//2] = img_resized
 
     return new_img
 

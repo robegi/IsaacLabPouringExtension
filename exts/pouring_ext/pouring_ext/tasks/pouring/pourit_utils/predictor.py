@@ -72,7 +72,11 @@ class LiquidPredictor():
 
     @torch.no_grad()
     def inference(self, input_image):
-        
+
+        # Change shape if input is just a single image
+        if len(input_image.shape)<4:
+            input_image = np.expand_dims(input_image,0)
+
         img = ZeroPaddingResizeCV(input_image, size=(self.cfg.dataset.crop_size, self.cfg.dataset.crop_size))
         img = transforms.normalize_img(img)
         img = np.transpose(img, (0, 3, 1, 2))
