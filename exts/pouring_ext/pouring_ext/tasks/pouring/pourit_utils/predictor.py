@@ -26,7 +26,7 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
 from . import transforms
-from .pourit import ZeroPaddingResizeCV
+from .pourit import ZeroPaddingResizeCV, ZeroPaddingResizeCVSingleChannel
 from .imutils import denormalize_img
 from .camutils import (cam_valid, multi_scale_cam)
 
@@ -71,8 +71,8 @@ class LiquidPredictor():
 
 
     @torch.no_grad()
-    def inference(self, input_image):
-
+    def inference(self, input_image, input_size):
+        
         # Change shape if input is just a single image
         if len(input_image.shape)<4:
             input_image = np.expand_dims(input_image,0)
@@ -89,23 +89,13 @@ class LiquidPredictor():
 
         cls_pred, cam = multi_scale_cam(self.camNet.half(), inputs=img_tensor_cuda.half(), scales=[1.])
         cls_pred = (torch.sum(cls_pred)>0).type(torch.int16) #(origin, flip_origin)
-        valid_cam = cam_valid(cam, cls_pred)
+        valid_cam = cam_valid(cam, cls_pred)  
+        # valid_cam = torch.transpose(valid_cam, 2, 3) # Transpose
+        valid_cam = valid_cam.type(torch.float32)
+        valid_cam = ZeroPaddingResizeCVSingleChannel(valid_cam.permute([0,2,3,1]).cpu().numpy(), size=input_size)
+        valid_cam = torch.tensor(valid_cam).type(torch.float32).permute([0,3,1,2])
 
-        torch.cuda.synchronize()
-        end_time = time.time()
-
-        valid_cam = valid_cam.cpu().float()
-        valid_cam = valid_cam.max(dim=1)[0]
-        cam_heatmap = plt.get_cmap('plasma')(valid_cam.numpy())[:,:,:,0:3]*255
-        cam_heatmap = cam_heatmap[..., ::-1]
-        cam_heatmap = np.ascontiguousarray(cam_heatmap)
-        cam_heatmap_tensor = torch.from_numpy(cam_heatmap) #RGB to BGR
-        cam_cmap_tensor = cam_heatmap_tensor.permute([0, 3, 1, 2]) #(1,3,512,512)
-        cam_img = cam_cmap_tensor*0.5 + img_denorm_tensor[:, [2,1,0] ,:, :]*0.5
-
-        cam_img_show = np.transpose(cam_img.numpy(), (0,2,3,1)).astype(np.uint8)
-
-        return cam_img_show
+        return valid_cam
 
 
 
