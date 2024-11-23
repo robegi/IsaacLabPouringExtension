@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(80*80*3+4,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150+4,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -152,11 +152,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.features_extractor = nn.Sequential(nn.Conv2d(3, 32, kernel_size=8, stride=4),
+        self.features_extractor = nn.Sequential(nn.Conv2d(1, 32, kernel_size=10, stride=5),
                                                 nn.ReLU(),
-                                                nn.Conv2d(32, 64, kernel_size=4, stride=2),
+                                                nn.Conv2d(32, 64, kernel_size=5, stride=3),
                                                 nn.ReLU(),
-                                                nn.Conv2d(64, 64, kernel_size=3, stride=1),
+                                                nn.Conv2d(64, 64, kernel_size=4, stride=1),
                                                 nn.ReLU(),
                                                 nn.Flatten())
 
@@ -177,24 +177,24 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(1,80,80, 3),dtype=np.float32),
-                                                                    "joints": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,4),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=1.0,shape=(1,1,150,150),dtype=np.float32),
+                                                                    "position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,4),dtype=np.float32)}))
 
         if role == "policy":
-            features = self.features_extractor(space["camera"][:,0].permute(0, 3, 1, 2))
-            self._shared_output = self.net(torch.cat([features, space["joints"].view(states.shape[0],-1)],dim=-1))
+            features = self.features_extractor(space["camera"][:,0])
+            self._shared_output = self.net(torch.cat([features, space["position"].view(states.shape[0],-1)],dim=-1))
             return self.mean_layer(self._shared_output), self.log_std_parameter, {}
         elif role == "value":
-            features = self.features_extractor(space["camera"][:,0].permute(0, 3, 1, 2))
-            self._shared_output = self.net(torch.cat([features, space["joints"].view(states.shape[0],-1)],dim=-1))
-            return self.value_layer(self._shared_output), {}
+            shared_output = self.net(torch.cat([self.features_extractor(space["camera"][:,0]), space["position"].view(states.shape[0],-1)],dim=-1)) if self._shared_output is None else self._shared_output
+            self._shared_output = None
+            return self.value_layer(shared_output), {}
     
 
 
 
 
 # load and wrap the Isaac Lab environment
-env = load_isaaclab_env(task_name="Isaac-Cartpole-RGB-Camera-Direct-v0")
+env = load_isaaclab_env(task_name="Isaac-Franka-Pouring-Direct-v0")
 env = IsaacLabCustomWrapper(env)
 
 device = env.device
@@ -234,14 +234,14 @@ cfg["value_loss_scale"] = 2.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None
 cfg["time_limit_bootstrap"] = True
-cfg["state_preprocessor"] = RunningStandardScaler
-cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
-cfg["value_preprocessor"] = RunningStandardScaler
-cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
+cfg["state_preprocessor"] = None
+cfg["state_preprocessor_kwargs"] = {}
+cfg["value_preprocessor"] = None
+cfg["value_preprocessor_kwargs"] = {}
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 16
 cfg["experiment"]["checkpoint_interval"] = 80
-cfg["experiment"]["directory"] = "runs/torch/Isaac-Cartpole-RGB-Camera-v0"
+cfg["experiment"]["directory"] = "runs/torch/pouring_ppo"
 
 agent = PPO(models=models,
             memory=memory,
