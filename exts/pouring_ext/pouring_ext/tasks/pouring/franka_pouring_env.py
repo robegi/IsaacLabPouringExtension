@@ -76,7 +76,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             static_friction=1.0,
             dynamic_friction=1.0,
             restitution=0.0,
-        )
+        ),
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**23)
     )
 
     # scene
@@ -139,7 +140,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # camera
-    camera_pos = (1.2, 0.59, 0.5)
+    camera_pos = (1.0, 0.39, 0.5)
     camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
 
     camera: TiledCameraCfg = TiledCameraCfg(
@@ -149,12 +150,12 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
         ),
-        width=480,
-        height=480,
+        width=120,
+        height=120,
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
     # NOTE PourIt always crops the image to 480x480x3, so use that as observations
-    observation_space = [480, 480, 3]
+    observation_space = [80, 80, 1]
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -286,23 +287,29 @@ class FrankaPouringEnv(DirectRLEnv):
         physx_interface = acquire_physx_interface()
         physx_interface.overwrite_gpu_setting(1)
 
-        # Set translucency to render transparent materials
-        settings = carb.settings.get_settings()
-        settings.set("/rtx/translucency/enabled", True)
-
         # Set partial rendering
         Sim_Context = SimulationContext()
         rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
+        # Set translucency to render transparent materials
+        settings = carb.settings.get_settings()
+        settings.set("/rtx/translucency/enabled", True)
+
         # Liquid, spawns it and gets the initial positions and velocities
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, 
                              lower_pos = self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
+
+
         self.liquid_init_pos = torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos.pt")
         self.liquid_num_particles = self.liquid_init_pos.size(0)
         self.liquid_init_pos = self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
+
+        # self.liquid_init_pos, self.liquid_init_vel = self.liquid.get_particles_position(0)
+        # self.liquid_num_particles = self.liquid_init_pos.shape[0]
+
         self.reward = np.zeros((self.num_envs))
         
         # Glass, position it before the robot
@@ -392,7 +399,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
 
-        self.obs = torch.zeros((self.num_envs, 480, 480, 3), device = self.device)
+        self.obs = torch.zeros((self.num_envs, self.cfg.observation_space[0], self.cfg.observation_space[1], self.cfg.observation_space[2]), device = self.device)
 
 
     # pre-physics step calls
@@ -410,10 +417,10 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = torch.zeros_like(self.alphas)
 
         if (self.counter >= 10) & (self.counter < 20):
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02], device=self.device)        
 
         if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+            self.alphas = torch.ones_like(self.alphas)*(-3*math.pi/4)
         
         # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
@@ -535,37 +542,40 @@ class FrankaPouringEnv(DirectRLEnv):
         camera_data = self._camera.data.output[self.data_type]
 
         # Choose whether to save the images or not
-        images_are_being_saved = True
+        images_are_being_saved = False
 
         if images_are_being_saved:
-            self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
+            self.save_image(camera_data/255.0, self.index_image, 0, "rgb")     
 
         # Process the image using PourIt
-        pourit_output = self.predictor.inference(camera_data.cpu().numpy())
+        parallel_envs = 30
+        for i in range(17):
+            pourit_output = self.predictor.inference(camera_data.cpu().numpy()[:parallel_envs])
         
         # Process image
-        for i in self.env_ids:
+        # for i in self.env_ids:
 
-            # Process output from pourit end only extract the heat map of the liquid
-            hsv = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2HSV)
-            mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
-            processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
+            # # Process output from pourit end only extract the heat map of the liquid
+            # hsv = cv2.cvtColor(pourit_output[0], cv2.COLOR_BGR2HSV)
+            # mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
+            # processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
 
-            # Use this as observation
-            self.obs[i] = torch.tensor(processed_image, device = self.device)
-            # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
+            # # Use this as observation
+            # # self.obs[i] = torch.tensor(processed_image, device = self.device)
+            # # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
 
-            # Save processed image in output folder
-            if images_are_being_saved:
-                # Convert output from PourIt to rgb for saving
-                rgb_heatmap_saved = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2RGB)
+            # # Save processed image in output folder
+            # if images_are_being_saved:
+            #     # Convert output from PourIt to rgb for saving
+            #     rgb_heatmap_saved = cv2.cvtColor(pourit_output[0], cv2.COLOR_BGR2RGB)
 
-                # Convert processed image in rgb for saving
-                processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
+            #     # Convert processed image in rgb for saving
+            #     processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
 
-                # Save both
-                self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
-                self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
+            #     # Save both
+            #     self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
+            #     self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
+
 
 
         self.index_image +=1 
@@ -581,6 +591,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def multiply_quaternions(self, q1, q2):
         """
+        observations = {"policy": self.obs.clone()}
+
         Multiply two quaternions.
         """
 
