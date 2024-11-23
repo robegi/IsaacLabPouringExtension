@@ -50,6 +50,7 @@ from omni.isaac.lab.sim import SimulationContext
 import omni.replicator.core as rep
 from copy import deepcopy
 import time
+import gymnasium as gym
 
 import argparse
 from omegaconf import OmegaConf
@@ -59,7 +60,7 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5  # 500 timesteps
+    episode_length_s = 8.3333/5*2  # 500 timesteps
     decimation = 2
     action_space = 4
     num_channels = 3 # Camera channels in the observations
@@ -76,7 +77,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             static_friction=1.0,
             dynamic_friction=1.0,
             restitution=0.0,
-        )
+        ),
+        render=sim_utils.RenderCfg(enable_translucency=True)
     )
 
     # scene
@@ -139,7 +141,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # camera
-    camera_pos = (1.2, 0.59, 0.5)
+    camera_pos = (1.0, 0.39, 0.5)
     camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
 
     camera: TiledCameraCfg = TiledCameraCfg(
@@ -149,12 +151,12 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
         ),
-        width=480,
-        height=480,
+        width=150,
+        height=150,
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
-    # NOTE PourIt always crops the image to 480x480x3, so use that as observations
-    observation_space = [480, 480, 3]
+    # NOTE PourIt always crops the image to 480x480, so use that as observations. Channels first in pytorch network. Position is of the EE relative to the target container
+    observation_space = {"camera": [1, camera.width, camera.height], "position": 4}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -286,14 +288,14 @@ class FrankaPouringEnv(DirectRLEnv):
         physx_interface = acquire_physx_interface()
         physx_interface.overwrite_gpu_setting(1)
 
-        # Set translucency to render transparent materials
-        settings = carb.settings.get_settings()
-        settings.set("/rtx/translucency/enabled", True)
-
         # Set partial rendering
         Sim_Context = SimulationContext()
         rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
+
+        # Set translucency to render transparent materials
+        settings = carb.settings.get_settings()
+        settings.set("/rtx/translucency/enabled", True)
 
         # Liquid, spawns it and gets the initial positions and velocities
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, 
@@ -350,6 +352,7 @@ class FrankaPouringEnv(DirectRLEnv):
         self.quat = torch.zeros((self.num_envs, 4), device = self.device)
 
         self.betas[:,0] = 1.0 # The rotation axis is fixed
+        self.theta_0 = None # Initial angle for observations
 
          # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -374,16 +377,13 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # PourIt model
 
-        # Pourit configuration
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--config", default=f"{self.cfg.CURRENT_PATH}/pourit_utils/configs/pourit_seen_ours.yaml", type=str, help="config")
-        parser.add_argument("--pooling", default="gmp", type=str, help="pooling method")
-        parser.add_argument("--seg_detach", action="store_true", help="detach seg")
-        parser.add_argument("--work_dir", default=None, type=str, help="work_dir")
-        parser.add_argument("--crop_size", default=480, type=int, help="crop_size")
-        parser.add_argument("--model_path", default=f"{self.cfg.CURRENT_PATH}/pourit_utils/checkpoints/iter_014000.pth", type=str, help="model_path")
-
-        self.args = parser.parse_args()
+        # PourIt configuration
+        self.args = argparse.Namespace
+        self.args.config = f"{self.cfg.CURRENT_PATH}/pourit_utils/configs/pourit_seen_ours.yaml"
+        self.args.pooling = "gmp"
+        self.args.work_dir = None
+        self.args.crop_size = 480
+        self.args.model_path = f"{self.cfg.CURRENT_PATH}/pourit_utils/checkpoints/iter_014000.pth"
 
         self.predictor_cfg = OmegaConf.load(self.args.config)
         self.predictor_cfg.dataset.crop_size = self.args.crop_size
@@ -392,7 +392,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
 
-        self.obs = torch.zeros((self.num_envs, 480, 480, 3), device = self.device)
+        self.obs = {"camera": torch.zeros((self.num_envs, 1, self.cfg.camera.width, self.cfg.camera.height), device = self.device), "position": torch.zeros((self.num_envs, 4), device = self.device)}
 
 
     # pre-physics step calls
@@ -405,17 +405,17 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,3].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
-        # Imposed motions (TEMPORARY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
+        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        # self.deltas = torch.zeros_like(self.deltas)
+        # self.alphas = torch.zeros_like(self.alphas)
 
-        if (self.counter >= 10) & (self.counter < 20):
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+        # if (self.counter >= 10) & (self.counter < 20):
+        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
 
-        if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+        # if self.counter == 50:
+        #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
-        # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
+        # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
         #     particle_pos, vel = self.liquid.get_particles_position()
         #     torch.save(torch.tensor(particle_pos),"/home/roberto/LiquidTask/exts/liquid_task/liquid_task/tasks/liquid/direct_4/usd_models/particle_pos.pt")
@@ -477,7 +477,7 @@ class FrankaPouringEnv(DirectRLEnv):
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
 
-            container_pos = self._container.data.root_pos_w[i].cpu().numpy()- self.scene.env_origins[i].cpu().numpy()
+            container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
 
             self.reward[i] = self.compute_reward(container=container_pos,
                                 particles=pos,
@@ -487,7 +487,7 @@ class FrankaPouringEnv(DirectRLEnv):
                                 radius=self.cfg.container_radius,
                                 num_particles=self.liquid_num_particles)
 
-        print(self.reward)
+        # print(self.reward)
         return torch.tensor(self.reward, device=self.device)
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -507,6 +507,10 @@ class FrankaPouringEnv(DirectRLEnv):
         glass_init_pos = self._glass.data.default_root_state.clone()[env_ids]
         glass_init_pos[:,:3] = glass_init_pos[:,:3] + self.scene.env_origins[env_ids]
         self._glass.write_root_state_to_sim(glass_init_pos,env_ids=env_ids)
+
+        # Save initial angle to compute observations
+        if self.theta_0 is None:
+            self.theta_0 = 2*torch.acos(self._glass.data.default_root_state.clone()[0,3])
 
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
@@ -535,45 +539,49 @@ class FrankaPouringEnv(DirectRLEnv):
         camera_data = self._camera.data.output[self.data_type]
 
         # Choose whether to save the images or not
-        images_are_being_saved = True
+        images_are_being_saved = False
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
 
         # Process the image using PourIt
-        pourit_output = self.predictor.inference(camera_data.cpu().numpy())
+        pourit_output = torch.tensor(self.predictor.inference(camera_data.cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
         
         # Process image
         for i in self.env_ids:
 
-            # Process output from pourit end only extract the heat map of the liquid
-            hsv = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2HSV)
-            mask_heatmap = cv2.inRange(hsv, (0, 50, 50), (40, 255, 255))
-            processed_image = cv2.bitwise_and(hsv, hsv, mask=mask_heatmap)
-
-            # Use this as observation
-            self.obs[i] = torch.tensor(processed_image, device = self.device)
-            # self.obs = torch.zeros((self.num_envs, 480, 480, 3), device=self.device)
+            # Use mask as observation
+            self.obs["camera"][i] = torch.tensor(pourit_output[i], device = self.device)
 
             # Save processed image in output folder
             if images_are_being_saved:
-                # Convert output from PourIt to rgb for saving
-                rgb_heatmap_saved = cv2.cvtColor(pourit_output[i], cv2.COLOR_BGR2RGB)
-
-                # Convert processed image in rgb for saving
-                processed_image_saved = cv2.cvtColor(processed_image, cv2.COLOR_HSV2RGB)
-
-                # Save both
-                self.save_image(rgb_heatmap_saved/255.0, self.index_image, i, "heatmap")
-                self.save_image(processed_image_saved/255.0, self.index_image, i, "processed")
+                self.save_image(pourit_output.permute([0,2,3,1])[i], self.index_image, i, "processed")
 
 
-        self.index_image +=1 
-        # self.obs = torch.tensor(pourit_output, device = self.device)
-        self.obs = self.obs/255.0
-        mean_tensor = torch.mean(self.obs, dim=(1, 2), keepdim=True)
-        self.obs -= mean_tensor
-        observations = {"policy": self.obs.clone()}
+        self.index_image +=1 # Index for saving the images
+
+        # Subtract the mean from the camera input
+        mean_tensor = torch.mean(self.obs["camera"], dim=(2, 3), keepdim=True)
+        self.obs["camera"] -= mean_tensor
+
+        # Calculate the relative position of the source container
+
+        # Get quantities from the environment
+        source_pos = self._glass.data.root_pos_w 
+        source_rot = self._glass.data.root_quat_w
+        target_pos = self._container.data.root_pos_w 
+
+        # Relative position
+        relative_pos = source_pos - target_pos
+
+        # Rotation
+        theta = 2*torch.acos(source_rot[:,0]) - self.theta_0
+
+        # Concatenate observations
+        self.obs["position"] = torch.cat((relative_pos,torch.unsqueeze(theta,dim=1)), dim=-1)
+        print(self.obs["position"])
+
+        observations = {"policy": self.obs}
 
         return observations
 
@@ -607,7 +615,19 @@ class FrankaPouringEnv(DirectRLEnv):
     def save_image(self, file, index_image, index_env, name):
         # Save images from camera 
         if not torch.is_tensor(file):
-            file = torch.unsqueeze(torch.tensor(file, device=self.device),0)
+            file = torch.tensor(file, device=self.device)
+
+        # Adjust dimensions
+        if len(file.shape)<4:
+            file = torch.unsqueeze(file, 0)
+
+        # Expand number of channels
+        if file.shape[3]==1:
+            #print(file.unique())
+            file_new = torch.zeros((file.shape[0],file.shape[1],file.shape[2],3), device=self.device)
+            file_new[:] = file 
+            file = file_new
+            #print(file.unique())
 
         save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
 
