@@ -60,10 +60,10 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5*2  # 500 timesteps
+    episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
     action_space = 4
-    num_channels = 3 # Camera channels in the observations
+    num_channels = 1 # Camera channels in the observations
     state_space = 0
 
     # simulation
@@ -156,7 +156,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
     # NOTE PourIt always crops the image to 480x480, so use that as observations. Channels first in pytorch network. Position is of the EE relative to the target container
-    observation_space = {"camera": [1, camera.width, camera.height], "position": 4}
+    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 13}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -240,7 +240,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
 
     # reward scales
     inside_weight = 1.0
-    outside_weight = -1.0
+    outside_weight = -0.1
 
 
 
@@ -306,6 +306,7 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid_init_pos = self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
         self.reward = np.zeros((self.num_envs))
+        self.standard_reward = np.zeros((self.num_envs))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -402,7 +403,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
         self.deltas = self.actions_raw[:,:3].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,3].clamp(-0.1,0.1) # Rotation angle
+        self.alphas = self.actions_raw[:,3].clamp(-0.5,0.5) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -466,7 +467,7 @@ class FrankaPouringEnv(DirectRLEnv):
     # post-physics step calls
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = torch.tensor(False)
+        terminated = torch.any(torch.tensor(self.standard_reward, device=self.device) < -0.5) # Reset if most liquid poured outside
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
@@ -484,6 +485,14 @@ class FrankaPouringEnv(DirectRLEnv):
                                 limit_height=self.cfg.container_height,
                                 inside_weight=self.cfg.inside_weight,
                                 outside_weight=self.cfg.outside_weight,
+                                radius=self.cfg.container_radius,
+                                num_particles=self.liquid_num_particles)
+            
+            self.standard_reward[i] = self.compute_reward(container=container_pos,
+                                particles=pos,
+                                limit_height=self.cfg.container_height,
+                                inside_weight=1.0,
+                                outside_weight=-1.0,
                                 radius=self.cfg.container_radius,
                                 num_particles=self.liquid_num_particles)
 
@@ -569,6 +578,8 @@ class FrankaPouringEnv(DirectRLEnv):
         # Get quantities from the environment
         source_pos = self._glass.data.root_pos_w 
         source_rot = self._glass.data.root_quat_w
+        source_vel = self._glass.data.root_lin_vel_w
+        source_rot_vel = self._glass.data.root_ang_vel_w
         target_pos = self._container.data.root_pos_w 
 
         # Relative position
@@ -576,9 +587,10 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Rotation
         theta = 2*torch.acos(source_rot[:,0]) - self.theta_0
+        theta = theta/math.pi # Normalize angle
 
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos,torch.unsqueeze(theta,dim=1)), dim=-1)
+        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel), dim=-1)
         print(self.obs["position"])
 
         observations = {"policy": self.obs}

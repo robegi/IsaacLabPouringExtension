@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150+4,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150+13,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -152,21 +152,25 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.features_extractor = nn.Sequential(nn.Conv2d(1, 32, kernel_size=10, stride=5),
+        self.features_extractor = nn.Sequential(nn.Conv2d(1, 32, kernel_size=12, stride=5),
                                                 nn.ReLU(),
-                                                nn.Conv2d(32, 64, kernel_size=5, stride=3),
+                                                nn.Conv2d(32, 64, kernel_size=8, stride=3),
                                                 nn.ReLU(),
-                                                nn.Conv2d(64, 64, kernel_size=4, stride=1),
+                                                nn.Conv2d(64, 64, kernel_size=7, stride=1),
                                                 nn.ReLU(),
                                                 nn.Flatten())
 
-        self.net = nn.Sequential(nn.Linear(2308, 512),
-                                 nn.ELU())
+        self.net = nn.Sequential(nn.Linear(77, 32),
+                                 nn.ELU(),
+                                 nn.Linear(32, 32),
+                                 nn.ELU(),
+                                 nn.Linear(32, 32),
+                                 nn.ELU(),)
 
-        self.mean_layer = nn.Linear(512, self.num_actions)
+        self.mean_layer = nn.Linear(32, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(512, 1)
+        self.value_layer = nn.Linear(32, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -178,7 +182,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
     def compute(self, inputs, role):
         states = inputs["states"]
         space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=1.0,shape=(1,1,150,150),dtype=np.float32),
-                                                                    "position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,4),dtype=np.float32)}))
+                                                                    "position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,13),dtype=np.float32)}))
 
         if role == "policy":
             features = self.features_extractor(space["camera"][:,0])
@@ -201,7 +205,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=64, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=10000, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -215,8 +219,8 @@ models["value"] = models["policy"] # same instance: shared model
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 64  # memory_size
-cfg["learning_epochs"] = 4
+cfg["rollouts"] = 10000  # memory_size
+cfg["learning_epochs"] = 8
 cfg["mini_batches"] = 1  # 16 * 512 / 8192
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
@@ -230,14 +234,14 @@ cfg["ratio_clip"] = 0.2
 cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = 0.0
-cfg["value_loss_scale"] = 2.0
+cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None
 cfg["time_limit_bootstrap"] = True
 cfg["state_preprocessor"] = None
 cfg["state_preprocessor_kwargs"] = {}
-cfg["value_preprocessor"] = None
-cfg["value_preprocessor_kwargs"] = {}
+cfg["value_preprocessor"] = RunningStandardScaler
+cfg["value_preprocessor_kwargs"] = {"size": 1, "device": env.device}
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 16
 cfg["experiment"]["checkpoint_interval"] = 80
@@ -252,10 +256,10 @@ agent = PPO(models=models,
 
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 6000, "headless": True}
+cfg_trainer = {"timesteps": 32000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
-# start training
+# # start training
 trainer.train()
 
 
@@ -265,8 +269,11 @@ trainer.train()
 # # ---------------------------------------------------------
 # from skrl.utils.huggingface import download_model_from_huggingface
 
-# # download the trained agent's checkpoint from Hugging Face Hub and load it
-# path = download_model_from_huggingface("skrl/IsaacOrbit-Isaac-Cartpole-v0-PPO", filename="agent.pt")
+# # load model
+# import os
+
+# PATH = os.path.dirname(os.path.realpath(__file__))
+# path = f"/{PATH}/../../runs/torch/pouring_ppo/24-11-24_00-32-19-282020_PPO/checkpoints/best_agent.pt"
 # agent.load(path)
 
 # # start evaluation
