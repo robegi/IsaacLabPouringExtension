@@ -62,7 +62,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
-    action_space = 4
+    action_space = 3
     num_channels = 1 # Camera channels in the observations
     state_space = 0
 
@@ -290,7 +290,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -402,8 +402,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:3].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,3].clamp(-0.5,0.5) # Rotation angle
+        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
+        self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -434,8 +434,9 @@ class FrankaPouringEnv(DirectRLEnv):
         self.quat[:,3] = self.betas[:,2] * torch.sin(half_angle)
         
 
-        #  Apply action at the end effector NOTE: to add sequence of poses like in the video, put start_ee_pos[index] here below instead of start_ee_pos[0]
-        self.actions_new[:,:3] = self.actions_new[:,:3]+self.deltas
+        #  Apply action at the end effector 
+        self.actions_new[:,1] = self.actions_new[:,1]+self.deltas[:,0] # y-axis
+        self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new

@@ -152,25 +152,17 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.features_extractor = nn.Sequential(nn.Conv2d(1, 32, kernel_size=12, stride=5),
-                                                nn.ReLU(),
-                                                nn.Conv2d(32, 64, kernel_size=8, stride=3),
-                                                nn.ReLU(),
-                                                nn.Conv2d(64, 64, kernel_size=7, stride=1),
+        self.features_extractor = nn.Sequential(nn.Conv2d(1, 1, kernel_size=150, stride=5),
                                                 nn.ReLU(),
                                                 nn.Flatten())
 
-        self.net = nn.Sequential(nn.Linear(77, 32),
-                                 nn.ELU(),
-                                 nn.Linear(32, 32),
-                                 nn.ELU(),
-                                 nn.Linear(32, 32),
+        self.net = nn.Sequential(nn.Linear(14, 64),
                                  nn.ELU(),)
 
-        self.mean_layer = nn.Linear(32, self.num_actions)
+        self.mean_layer = nn.Linear(64, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(32, 1)
+        self.value_layer = nn.Linear(64, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -205,7 +197,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=10000, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=64, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -219,8 +211,8 @@ models["value"] = models["policy"] # same instance: shared model
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 10000  # memory_size
-cfg["learning_epochs"] = 8
+cfg["rollouts"] = 64  # memory_size
+cfg["learning_epochs"] = 4
 cfg["mini_batches"] = 1  # 16 * 512 / 8192
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
@@ -260,21 +252,20 @@ cfg_trainer = {"timesteps": 32000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # # start training
-trainer.train()
+#trainer.train()
 
 
 # # ---------------------------------------------------------
 # # comment the code above: `trainer.train()`, and...
 # # uncomment the following lines to evaluate a trained agent
 # # ---------------------------------------------------------
-# from skrl.utils.huggingface import download_model_from_huggingface
 
-# # load model
-# import os
+# load model
+import os
 
-# PATH = os.path.dirname(os.path.realpath(__file__))
-# path = f"/{PATH}/../../runs/torch/pouring_ppo/24-11-24_00-32-19-282020_PPO/checkpoints/best_agent.pt"
-# agent.load(path)
+PATH = os.path.dirname(os.path.realpath(__file__))
+path = f"/{PATH}/../../runs/torch/pouring_ppo/Basic/checkpoints/best_agent.pt"
+agent.load(path)
 
-# # start evaluation
-# trainer.eval()
+# start evaluation
+trainer.eval()
