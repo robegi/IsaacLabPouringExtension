@@ -240,7 +240,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
 
     # reward scales
     inside_weight = 1.0
-    outside_weight = -0.1
+    outside_weight = -1.0
 
 
 

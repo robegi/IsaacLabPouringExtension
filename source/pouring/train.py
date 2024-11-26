@@ -252,7 +252,7 @@ cfg_trainer = {"timesteps": 32000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # # start training
-#trainer.train()
+trainer.train()
 
 
 # # ---------------------------------------------------------
@@ -260,12 +260,12 @@ trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 # # uncomment the following lines to evaluate a trained agent
 # # ---------------------------------------------------------
 
-# load model
-import os
+# # load model
+# import os
 
-PATH = os.path.dirname(os.path.realpath(__file__))
-path = f"/{PATH}/../../runs/torch/pouring_ppo/Basic/checkpoints/best_agent.pt"
-agent.load(path)
+# PATH = os.path.dirname(os.path.realpath(__file__))
+# path = f"/{PATH}/../../runs/torch/pouring_ppo/Basic/checkpoints/best_agent.pt"
+# agent.load(path)
 
-# start evaluation
-trainer.eval()
+# # start evaluation
+# trainer.eval()
