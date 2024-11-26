@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150+13,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(13,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -152,17 +152,17 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.features_extractor = nn.Sequential(nn.Conv2d(1, 1, kernel_size=150, stride=5),
-                                                nn.ReLU(),
-                                                nn.Flatten())
-
-        self.net = nn.Sequential(nn.Linear(14, 64),
+        self.net = nn.Sequential(nn.Linear(13, 128),
+                                 nn.ELU(),
+                                 nn.Linear(128, 128),
+                                 nn.ELU(),
+                                 nn.Linear(128, 128),
                                  nn.ELU(),)
 
-        self.mean_layer = nn.Linear(64, self.num_actions)
+        self.mean_layer = nn.Linear(128, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(64, 1)
+        self.value_layer = nn.Linear(128, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -173,15 +173,13 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=1.0,shape=(1,1,150,150),dtype=np.float32),
-                                                                    "position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,13),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,13),dtype=np.float32)}))
 
         if role == "policy":
-            features = self.features_extractor(space["camera"][:,0])
-            self._shared_output = self.net(torch.cat([features, space["position"].view(states.shape[0],-1)],dim=-1))
+            self._shared_output = self.net(space["position"].view(states.shape[0],-1))
             return self.mean_layer(self._shared_output), self.log_std_parameter, {}
         elif role == "value":
-            shared_output = self.net(torch.cat([self.features_extractor(space["camera"][:,0]), space["position"].view(states.shape[0],-1)],dim=-1)) if self._shared_output is None else self._shared_output
+            shared_output = self.net(space["position"].view(states.shape[0],-1)) if self._shared_output is None else self._shared_output
             self._shared_output = None
             return self.value_layer(shared_output), {}
     
@@ -248,7 +246,7 @@ agent = PPO(models=models,
 
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 32000, "headless": True}
+cfg_trainer = {"timesteps": 6000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # # start training

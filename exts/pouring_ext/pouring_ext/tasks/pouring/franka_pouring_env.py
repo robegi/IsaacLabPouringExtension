@@ -37,7 +37,6 @@ from omni.isaac.lab.utils.math import subtract_frame_transforms
 from omni.isaac.core import PhysicsContext
 import math
 import quaternion
-from omni.isaac.lab.sensors import Camera, CameraCfg, TiledCamera, TiledCameraCfg, save_images_to_file
 import carb.settings
 import os
 from omni.isaac.lab.utils import convert_dict_to_backend
@@ -63,7 +62,6 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
     action_space = 3
-    num_channels = 1 # Camera channels in the observations
     state_space = 0
 
     # simulation
@@ -140,23 +138,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         },
     )
 
-    # camera
-    camera_pos = (1.0, 0.39, 0.5)
-    camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
-
-    camera: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="world"),
-        data_types=['rgb'],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.1, 20.0)
-        ),
-        width=150,
-        height=150,
-    )
-    # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
-    # NOTE PourIt always crops the image to 480x480, so use that as observations. Channels first in pytorch network. Position is of the EE relative to the target container
-    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 13}
+    # Observation space
+    observation_space = {"position": 13}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -290,7 +273,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -323,11 +306,6 @@ class FrankaPouringEnv(DirectRLEnv):
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)      
-
-        # Camera
-        self._camera = TiledCamera(self.cfg.camera) 
-        self.data_type = 'rgb'
-        self.scene.sensors["camera"] = self._camera
 
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -365,35 +343,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Target on the finger actuators to hold the glass
         self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
 
-        # Create replicator writer
-
-        self.output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", "camera")
-        self.rep_writer = rep.BasicWriter(
-            output_dir=self.output_dir,
-            frame_padding=0,
-            colorize_instance_id_segmentation=self._camera.cfg.colorize_instance_id_segmentation,
-            colorize_instance_segmentation=self._camera.cfg.colorize_instance_segmentation,
-            colorize_semantic_segmentation=self._camera.cfg.colorize_semantic_segmentation,
-        )
-
-        # PourIt model
-
-        # PourIt configuration
-        self.args = argparse.Namespace
-        self.args.config = f"{self.cfg.CURRENT_PATH}/pourit_utils/configs/pourit_seen_ours.yaml"
-        self.args.pooling = "gmp"
-        self.args.work_dir = None
-        self.args.crop_size = 480
-        self.args.model_path = f"{self.cfg.CURRENT_PATH}/pourit_utils/checkpoints/iter_014000.pth"
-
-        self.predictor_cfg = OmegaConf.load(self.args.config)
-        self.predictor_cfg.dataset.crop_size = self.args.crop_size
-        if self.args.work_dir is not None:
-            self.predictor_cfg.work_dir.dir = self.args.work_dir
-
-        self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
-
-        self.obs = {"camera": torch.zeros((self.num_envs, 1, self.cfg.camera.width, self.cfg.camera.height), device = self.device), "position": torch.zeros((self.num_envs, 4), device = self.device)}
+        self.obs = {"position": torch.zeros((self.num_envs, 4), device = self.device)}
 
 
     # pre-physics step calls
@@ -545,35 +495,6 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
-        # Extract and save rgb output from camera
-        camera_data = self._camera.data.output[self.data_type]
-
-        # Choose whether to save the images or not
-        images_are_being_saved = False
-
-        if images_are_being_saved:
-            self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
-
-        # Process the image using PourIt
-        pourit_output = torch.tensor(self.predictor.inference(camera_data.cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
-        
-        # Process image
-        for i in self.env_ids:
-
-            # Use mask as observation
-            self.obs["camera"][i] = torch.tensor(pourit_output[i], device = self.device)
-
-            # Save processed image in output folder
-            if images_are_being_saved:
-                self.save_image(pourit_output.permute([0,2,3,1])[i], self.index_image, i, "processed")
-
-
-        self.index_image +=1 # Index for saving the images
-
-        # Subtract the mean from the camera input
-        mean_tensor = torch.mean(self.obs["camera"], dim=(2, 3), keepdim=True)
-        self.obs["camera"] -= mean_tensor
-
         # Calculate the relative position of the source container
 
         # Get quantities from the environment
@@ -624,26 +545,6 @@ class FrankaPouringEnv(DirectRLEnv):
         z = torch.unsqueeze(z,1)
 
         return torch.cat((w, x, y, z),dim=-1)
-
-    def save_image(self, file, index_image, index_env, name):
-        # Save images from camera 
-        if not torch.is_tensor(file):
-            file = torch.tensor(file, device=self.device)
-
-        # Adjust dimensions
-        if len(file.shape)<4:
-            file = torch.unsqueeze(file, 0)
-
-        # Expand number of channels
-        if file.shape[3]==1:
-            #print(file.unique())
-            file_new = torch.zeros((file.shape[0],file.shape[1],file.shape[2],3), device=self.device)
-            file_new[:] = file 
-            file = file_new
-            #print(file.unique())
-
-        save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
-
 
     def compute_reward(self, 
                        container: np.array, 
