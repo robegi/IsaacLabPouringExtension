@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(13,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(27,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -152,17 +152,17 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.net = nn.Sequential(nn.Linear(13, 128),
+        self.net = nn.Sequential(nn.Linear(27, 128),
                                  nn.ELU(),
-                                 nn.Linear(128, 128),
+                                 nn.Linear(128, 64),
                                  nn.ELU(),
-                                 nn.Linear(128, 128),
+                                 nn.Linear(64, 32),
                                  nn.ELU(),)
 
-        self.mean_layer = nn.Linear(128, self.num_actions)
+        self.mean_layer = nn.Linear(32, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(128, 1)
+        self.value_layer = nn.Linear(32, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -173,7 +173,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,13),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,27),dtype=np.float32)}))
 
         if role == "policy":
             self._shared_output = self.net(space["position"].view(states.shape[0],-1))
@@ -228,8 +228,8 @@ cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None
 cfg["time_limit_bootstrap"] = True
-cfg["state_preprocessor"] = None
-cfg["state_preprocessor_kwargs"] = {}
+cfg["state_preprocessor"] = RunningStandardScaler
+cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": env.device}
 cfg["value_preprocessor"] = RunningStandardScaler
 cfg["value_preprocessor_kwargs"] = {"size": 1, "device": env.device}
 # logging to TensorBoard and write checkpoints (in timesteps)
@@ -246,7 +246,7 @@ agent = PPO(models=models,
 
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 6000, "headless": True}
+cfg_trainer = {"timesteps": 32000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # # start training

@@ -139,7 +139,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 13}
+    observation_space = {"position": 27}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -273,7 +273,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -501,8 +501,17 @@ class FrankaPouringEnv(DirectRLEnv):
         source_pos = self._glass.data.root_pos_w 
         source_rot = self._glass.data.root_quat_w
         source_vel = self._glass.data.root_lin_vel_w
-        source_rot_vel = self._glass.data.root_ang_vel_w
+        source_rot_vel = self._glass.data.root_ang_vel_w*0.1
         target_pos = self._container.data.root_pos_w 
+        
+        # Scaled joint quantities
+        dof_pos_scaled = (
+            2.0
+            * (self._robot.data.joint_pos[:,:7] - self.robot_dof_lower_limits[:7])
+            / (self.robot_dof_upper_limits[:7] - self.robot_dof_lower_limits[:7])
+            - 1.0
+        )
+        joint_vel = self._robot.data.joint_vel[:,:7] * 0.1
 
         # Relative position
         relative_pos = source_pos - target_pos
@@ -512,7 +521,7 @@ class FrankaPouringEnv(DirectRLEnv):
         theta = theta/math.pi # Normalize angle
 
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel), dim=-1)
+        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel, dof_pos_scaled, joint_vel), dim=-1)
         print(self.obs["position"])
 
         observations = {"policy": self.obs}
