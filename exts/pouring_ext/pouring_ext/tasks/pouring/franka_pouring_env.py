@@ -76,7 +76,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        render=sim_utils.RenderCfg(enable_translucency=True)
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**24)
     )
 
     # scene
