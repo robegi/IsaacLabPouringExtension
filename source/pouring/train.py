@@ -152,11 +152,11 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.net = nn.Sequential(nn.Linear(27, 128),
+        self.net = nn.Sequential(nn.Linear(27, 512),
                                  nn.ELU(),
-                                 nn.Linear(128, 64),
+                                 nn.Linear(512, 128),
                                  nn.ELU(),
-                                 nn.Linear(64, 32),
+                                 nn.Linear(128, 32),
                                  nn.ELU(),)
 
         self.mean_layer = nn.Linear(32, self.num_actions)
@@ -223,7 +223,7 @@ cfg["grad_norm_clip"] = 1.0
 cfg["ratio_clip"] = 0.2
 cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = True
-cfg["entropy_loss_scale"] = 0.0
+cfg["entropy_loss_scale"] = 0
 cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None

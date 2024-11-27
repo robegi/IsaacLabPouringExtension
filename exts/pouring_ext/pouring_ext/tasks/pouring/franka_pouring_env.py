@@ -50,6 +50,7 @@ import omni.replicator.core as rep
 from copy import deepcopy
 import time
 import gymnasium as gym
+from omni.isaac.lab.utils.math import sample_uniform
 
 import argparse
 from omegaconf import OmegaConf
@@ -76,7 +77,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**24)
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**22)
     )
 
     # scene
@@ -475,6 +476,9 @@ class FrankaPouringEnv(DirectRLEnv):
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
+        lower_bound = torch.tensor([0,-0.3,0],device=self.device)
+        upper_bound = torch.tensor([0,0.3,0],device=self.device)
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
