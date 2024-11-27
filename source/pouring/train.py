@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150+13,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(150*150*3+27,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -152,17 +152,23 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
 
-        self.features_extractor = nn.Sequential(nn.Conv2d(1, 1, kernel_size=150, stride=5),
+        self.features_extractor = nn.Sequential(nn.Conv2d(3, 32, kernel_size=12, stride=5),
+                                                nn.ReLU(),
+                                                nn.Conv2d(32, 64, kernel_size=8, stride=3),
+                                                nn.ReLU(),
+                                                nn.Conv2d(64, 64, kernel_size=7, stride=1),
                                                 nn.ReLU(),
                                                 nn.Flatten())
 
-        self.net = nn.Sequential(nn.Linear(14, 64),
+        self.net = nn.Sequential(nn.Linear(77, 512),
+                                 nn.ELU(),
+                                 nn.Linear(512, 512),
                                  nn.ELU(),)
 
-        self.mean_layer = nn.Linear(64, self.num_actions)
+        self.mean_layer = nn.Linear(512, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(64, 1)
+        self.value_layer = nn.Linear(512, 1)
 
     def act(self, inputs, role):
         if role == "policy":
@@ -173,15 +179,15 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=1.0,shape=(1,1,150,150),dtype=np.float32),
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"camera": gymnasium.spaces.Box(low=-1.0,high=1.0,shape=(1,150,150,3),dtype=np.float32),
                                                                     "position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,13),dtype=np.float32)}))
 
         if role == "policy":
-            features = self.features_extractor(space["camera"][:,0])
+            features = self.features_extractor(space["camera"][:,0].permute(0, 3, 1, 2))
             self._shared_output = self.net(torch.cat([features, space["position"].view(states.shape[0],-1)],dim=-1))
             return self.mean_layer(self._shared_output), self.log_std_parameter, {}
         elif role == "value":
-            shared_output = self.net(torch.cat([self.features_extractor(space["camera"][:,0]), space["position"].view(states.shape[0],-1)],dim=-1)) if self._shared_output is None else self._shared_output
+            shared_output = self.net(torch.cat([self.features_extractor(space["camera"][:,0].permute(0, 3, 1, 2)), space["position"].view(states.shape[0],-1)],dim=-1)) if self._shared_output is None else self._shared_output
             self._shared_output = None
             return self.value_layer(shared_output), {}
     

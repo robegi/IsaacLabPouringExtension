@@ -63,7 +63,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
     action_space = 3
-    num_channels = 1 # Camera channels in the observations
+    num_channels = 3 # Camera channels in the observations
     state_space = 0
 
     # simulation
@@ -156,7 +156,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
     # NOTE PourIt always crops the image to 480x480, so use that as observations. Channels first in pytorch network. Position is of the EE relative to the target container
-    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 13}
+    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 27}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -393,7 +393,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
 
-        self.obs = {"camera": torch.zeros((self.num_envs, 1, self.cfg.camera.width, self.cfg.camera.height), device = self.device), "position": torch.zeros((self.num_envs, 4), device = self.device)}
+        self.obs = {"camera": torch.zeros((self.num_envs, self.cfg.camera.width, self.cfg.camera.height, self.cfg.num_channels), device = self.device), "position": torch.zeros((self.num_envs, 4), device = self.device)}
 
 
     # pre-physics step calls
@@ -546,32 +546,10 @@ class FrankaPouringEnv(DirectRLEnv):
     def _get_observations(self) -> dict:
 
         # Extract and save rgb output from camera
-        camera_data = self._camera.data.output[self.data_type]
-
-        # Choose whether to save the images or not
-        images_are_being_saved = False
-
-        if images_are_being_saved:
-            self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
-
-        # Process the image using PourIt
-        pourit_output = torch.tensor(self.predictor.inference(camera_data.cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
-        
-        # Process image
-        for i in self.env_ids:
-
-            # Use mask as observation
-            self.obs["camera"][i] = torch.tensor(pourit_output[i], device = self.device)
-
-            # Save processed image in output folder
-            if images_are_being_saved:
-                self.save_image(pourit_output.permute([0,2,3,1])[i], self.index_image, i, "processed")
-
-
-        self.index_image +=1 # Index for saving the images
+        camera_data = self._camera.data.output[self.data_type]/255.0
 
         # Subtract the mean from the camera input
-        mean_tensor = torch.mean(self.obs["camera"], dim=(2, 3), keepdim=True)
+        mean_tensor = torch.mean(camera_data, dim=(1, 2), keepdim=True)
         self.obs["camera"] -= mean_tensor
 
         # Calculate the relative position of the source container
@@ -583,6 +561,15 @@ class FrankaPouringEnv(DirectRLEnv):
         source_rot_vel = self._glass.data.root_ang_vel_w
         target_pos = self._container.data.root_pos_w 
 
+        # Scaled joint quantities
+        dof_pos_scaled = (
+            2.0
+            * (self._robot.data.joint_pos[:,:7] - self.robot_dof_lower_limits[:7])
+            / (self.robot_dof_upper_limits[:7] - self.robot_dof_lower_limits[:7])
+            - 1.0
+        )
+        joint_vel = self._robot.data.joint_vel[:,:7] * 0.1
+
         # Relative position
         relative_pos = source_pos - target_pos
 
@@ -591,8 +578,7 @@ class FrankaPouringEnv(DirectRLEnv):
         theta = theta/math.pi # Normalize angle
 
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel), dim=-1)
-        print(self.obs["position"])
+        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel, dof_pos_scaled, joint_vel), dim=-1)
 
         observations = {"policy": self.obs}
 
