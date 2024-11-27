@@ -78,7 +78,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        render=sim_utils.RenderCfg(enable_translucency=True)
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**24)
     )
 
     # scene
@@ -141,7 +141,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # camera
-    camera_pos = (1.0, 0.39, 0.5)
+    camera_pos = (1.2, 0.59, 0.5)
     camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
 
     camera: TiledCameraCfg = TiledCameraCfg(
