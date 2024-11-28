@@ -274,7 +274,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -520,13 +520,8 @@ class FrankaPouringEnv(DirectRLEnv):
         # Relative position
         relative_pos = source_pos - target_pos
 
-        # Rotation
-        theta = 2*torch.acos(source_rot[:,0]) - self.theta_0
-        theta = theta/math.pi # Normalize angle
-
         # Concatenate observations
         self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel, dof_pos_scaled, joint_vel), dim=-1)
-        print(self.obs["position"])
 
         observations = {"policy": self.obs}
 
