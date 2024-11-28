@@ -148,7 +148,7 @@ class IsaacLabCustomWrapper(Wrapper):
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
                  clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum",
-                 num_envs=32, num_layers=3, hidden_size=512, sequence_length=16):
+                 num_envs=2, num_layers=1, hidden_size=1024, sequence_length=32):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
@@ -163,11 +163,9 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                           num_layers=self.num_layers,
                           batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 64),
                                  nn.ELU(),
-                                 nn.Linear(512, 128),
-                                 nn.ELU(),
-                                 nn.Linear(128, 32),
+                                 nn.Linear(64, 32),
                                  nn.ELU(),)
 
         self.mean_layer = nn.Linear(32, self.num_actions)
@@ -246,7 +244,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=16, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=64, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -260,7 +258,7 @@ models["value"] = models["policy"] # same instance: shared model
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 16  # memory_size
+cfg["rollouts"] = 64  # memory_size
 cfg["learning_epochs"] = 4
 cfg["mini_batches"] = 1  # 16 * 512 / 8192
 cfg["discount_factor"] = 0.99

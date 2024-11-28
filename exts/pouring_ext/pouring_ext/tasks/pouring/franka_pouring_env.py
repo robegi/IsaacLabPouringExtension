@@ -62,7 +62,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
-    action_space = 3
+    action_space = 2
     state_space = 0
 
     # simulation
@@ -258,13 +258,6 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.stage = get_current_stage()
 
-        self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
-        self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
-        self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
-
-        self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
-
 
     def _setup_scene(self):       
         
@@ -274,7 +267,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -332,7 +325,6 @@ class FrankaPouringEnv(DirectRLEnv):
         self.quat = torch.zeros((self.num_envs, 4), device = self.device)
 
         self.betas[:,0] = 1.0 # The rotation axis is fixed
-        self.theta_0 = None # Initial angle for observations
 
          # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -353,8 +345,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
+        self.deltas = self.actions_raw[:,:1].clamp(-0.01,0.01)
+        self.alphas = self.actions_raw[:,1].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -387,7 +379,6 @@ class FrankaPouringEnv(DirectRLEnv):
 
         #  Apply action at the end effector 
         self.actions_new[:,1] = self.actions_new[:,1]+self.deltas[:,0] # y-axis
-        self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
@@ -468,10 +459,6 @@ class FrankaPouringEnv(DirectRLEnv):
         glass_init_pos = self._glass.data.default_root_state.clone()[env_ids]
         glass_init_pos[:,:3] = glass_init_pos[:,:3] + self.scene.env_origins[env_ids]
         self._glass.write_root_state_to_sim(glass_init_pos,env_ids=env_ids)
-
-        # Save initial angle to compute observations
-        if self.theta_0 is None:
-            self.theta_0 = 2*torch.acos(self._glass.data.default_root_state.clone()[0,3])
 
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
