@@ -62,7 +62,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
-    action_space = 2
+    action_space = 3
     state_space = 0
 
     # simulation
@@ -140,7 +140,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 27}
+    observation_space = {"position": 18}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -284,6 +284,7 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
         self.reward = np.zeros((self.num_envs))
         self.standard_reward = np.zeros((self.num_envs))
+        self.obs_reward = np.zeros((self.num_envs))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -336,7 +337,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Target on the finger actuators to hold the glass
         self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
 
-        self.obs = {"position": torch.zeros((self.num_envs, 4), device = self.device)}
+        self.obs = {"position": torch.zeros((self.num_envs, self.cfg.observation_space["position"]), device = self.device)}
 
 
     # pre-physics step calls
@@ -345,8 +346,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:1].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,1].clamp(-0.1,0.1) # Rotation angle
+        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
+        self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -379,6 +380,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         #  Apply action at the end effector 
         self.actions_new[:,1] = self.actions_new[:,1]+self.deltas[:,0] # y-axis
+        self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
@@ -489,11 +491,11 @@ class FrankaPouringEnv(DirectRLEnv):
         # Calculate the relative position of the source container
 
         # Get quantities from the environment
-        source_pos = self._glass.data.root_pos_w 
+        source_pos = self._glass.data.root_pos_w - self.scene.env_origins
         source_rot = self._glass.data.root_quat_w
         source_vel = self._glass.data.root_lin_vel_w
         source_rot_vel = self._glass.data.root_ang_vel_w*0.1
-        target_pos = self._container.data.root_pos_w 
+        target_pos = self._container.data.root_pos_w - self.scene.env_origins
         
         # Scaled joint quantities
         dof_pos_scaled = (
@@ -507,8 +509,25 @@ class FrankaPouringEnv(DirectRLEnv):
         # Relative position
         relative_pos = source_pos - target_pos
 
+        # Compute reward for each environment to use as observation
+        for i in range (self.num_envs):
+            pos, vel = self.liquid.get_particles_position(i)
+
+            container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
+
+            self.obs_reward[i] = self.compute_reward(container=container_pos,
+                                particles=pos,
+                                limit_height=self.cfg.container_height,
+                                inside_weight=self.cfg.inside_weight,
+                                outside_weight=self.cfg.outside_weight,
+                                radius=self.cfg.container_radius,
+                                num_particles=self.liquid_num_particles)
+            
+        obs_reward = torch.tensor(self.obs_reward, device = self.device).unsqueeze(1)
+
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel, dof_pos_scaled, joint_vel), dim=-1)
+        self.obs["position"] = torch.cat((target_pos, dof_pos_scaled, joint_vel,obs_reward), dim=-1)
+        print(self.obs)
 
         observations = {"policy": self.obs}
 
