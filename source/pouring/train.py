@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(18,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(19,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -148,7 +148,7 @@ class IsaacLabCustomWrapper(Wrapper):
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
                  clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum",
-                 num_envs=2, num_layers=1, hidden_size=64, sequence_length=128):
+                 num_envs=2, num_layers=1, hidden_size=1024, sequence_length=128):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
@@ -163,9 +163,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                           num_layers=self.num_layers,
                           batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 64),
-                                 nn.ELU(),
-                                 nn.Linear(64, 32),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 32),
                                  nn.ELU(),)
 
         self.mean_layer = nn.Linear(32, self.num_actions)
@@ -186,7 +184,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,18),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,19),dtype=np.float32)}))
         states = space["position"]
 
         terminated = inputs.get("terminated", None)

@@ -140,7 +140,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 18}
+    observation_space = {"position": 19}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -284,7 +284,8 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
         self.reward = np.zeros((self.num_envs))
         self.standard_reward = np.zeros((self.num_envs))
-        self.obs_reward = np.zeros((self.num_envs))
+        self.obs_reward_in = np.zeros((self.num_envs))
+        self.obs_reward_out = np.zeros((self.num_envs))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -515,18 +516,27 @@ class FrankaPouringEnv(DirectRLEnv):
 
             container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
 
-            self.obs_reward[i] = self.compute_reward(container=container_pos,
+            self.obs_reward_in[i] = self.compute_reward(container=container_pos,
                                 particles=pos,
                                 limit_height=self.cfg.container_height,
-                                inside_weight=self.cfg.inside_weight,
-                                outside_weight=self.cfg.outside_weight,
+                                inside_weight=1.0,
+                                outside_weight=0.,
                                 radius=self.cfg.container_radius,
                                 num_particles=self.liquid_num_particles)
             
-        obs_reward = torch.tensor(self.obs_reward, device = self.device).unsqueeze(1)
+            self.obs_reward_out[i] = self.compute_reward(container=container_pos,
+                                particles=pos,
+                                limit_height=self.cfg.container_height,
+                                inside_weight=0.,
+                                outside_weight=1.0,
+                                radius=self.cfg.container_radius,
+                                num_particles=self.liquid_num_particles)
+            
+        obs_reward_in = torch.tensor(self.obs_reward_in, device = self.device).unsqueeze(1)
+        obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
 
         # Concatenate observations
-        self.obs["position"] = torch.cat((target_pos, dof_pos_scaled, joint_vel,obs_reward), dim=-1)
+        self.obs["position"] = torch.cat((target_pos, dof_pos_scaled, joint_vel,obs_reward_in, obs_reward_out), dim=-1)
         print(self.obs)
 
         observations = {"policy": self.obs}
