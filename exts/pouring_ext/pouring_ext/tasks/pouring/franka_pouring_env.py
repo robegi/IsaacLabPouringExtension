@@ -46,7 +46,6 @@ import matplotlib as plt
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from omni.isaac.lab.sim import SimulationContext 
-import omni.replicator.core as rep
 from copy import deepcopy
 import time
 import gymnasium as gym
@@ -215,12 +214,12 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # Add liquid configuration parameters
     # Direct spawn
     liquidCfg = FluidObjectCfg()
-    liquidCfg.numParticlesX = 5
-    liquidCfg.numParticlesY = 5
-    liquidCfg.numParticlesZ = 100
+    liquidCfg.numParticlesX = 3
+    liquidCfg.numParticlesY = 3
+    liquidCfg.numParticlesZ = 30
     liquidCfg.density = 0.0
     liquidCfg.particle_mass = 0.001
-    liquidCfg.particleSpacing = 0.005
+    liquidCfg.particleSpacing = 0.01
 
     # reward scales
     inside_weight = 1.0
@@ -267,7 +266,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.NO_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -278,9 +277,13 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, 
                              lower_pos = self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
-        self.liquid_init_pos = torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos.pt")
+
+        # # Initial particle position, from spawn or from saved file
+        # self.liquid_init_pos, self.liquid_init_vel = torch.tensor(self.liquid.get_particles_position(0) , device = self.device)
+        self.liquid_init_pos = torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos_small.pt")
+
         self.liquid_num_particles = self.liquid_init_pos.size(0)
-        self.liquid_init_pos = self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
+        self.liquid_init_pos = self.liquid_init_pos.cpu().numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
         self.reward = np.zeros((self.num_envs))
         self.standard_reward = np.zeros((self.num_envs))
@@ -351,20 +354,20 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
-        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        # self.deltas = torch.zeros_like(self.deltas)
-        # self.alphas = torch.zeros_like(self.alphas)
+        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        self.deltas = torch.zeros_like(self.deltas)
+        self.alphas = torch.zeros_like(self.alphas)
 
-        # if (self.counter >= 10) & (self.counter < 20):
-        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+        if (self.counter >= 10) & (self.counter < 20):
+            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.01,-0.02])        
 
-        # if self.counter == 50:
-        #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+        if self.counter == 50:
+            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
-        # if self.counter == 200:
-        #     particle_pos, vel = self.liquid.get_particles_position()
-        #     torch.save(torch.tensor(particle_pos),"/home/roberto/LiquidTask/exts/liquid_task/liquid_task/tasks/liquid/direct_4/usd_models/particle_pos.pt")
+        # if self.counter == 70:
+        #     particle_pos, vel = self.liquid.get_particles_position(0)
+        #     torch.save(torch.tensor(particle_pos),f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos_small.pt")
 
         self.counter += 1
 
@@ -423,6 +426,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Compute reward for each environment
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
+            print(pos[250,2])
 
             container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
 
@@ -468,7 +472,7 @@ class FrankaPouringEnv(DirectRLEnv):
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
         lower_bound = torch.tensor([0,-0.3,0],device=self.device)
         upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
