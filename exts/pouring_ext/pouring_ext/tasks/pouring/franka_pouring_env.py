@@ -61,7 +61,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
-    action_space = 3
+    action_space = 7
     state_space = 0
 
     # simulation
@@ -225,6 +225,10 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     inside_weight = 1.0
     outside_weight = -1.0
 
+    # Actions and observations scales
+    action_scale = 7.5
+    dof_velocity_scale = 0.1
+
 
 
 class FrankaPouringEnv(DirectRLEnv):
@@ -247,6 +251,12 @@ class FrankaPouringEnv(DirectRLEnv):
         # create auxiliary variables for computing applied action, observations and rewards
         self.robot_dof_lower_limits = self._robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self._robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+
+        self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits)
+        self.robot_dof_speed_scales[self._robot.find_joints("panda_finger_joint1")[0]] = 0.1
+        self.robot_dof_speed_scales[self._robot.find_joints("panda_finger_joint2")[0]] = 0.1
+
+        self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints-2), device=self.device)
 
         self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits)
 
@@ -314,23 +324,6 @@ class FrankaPouringEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        # End effector controller
-        self.diff_ik_cfg = DifferentialIKControllerCfg(command_type="pose", use_relative_mode=False, ik_method="dls")
-        self.diff_ik_controller = DifferentialIKController(self.diff_ik_cfg, num_envs=self.scene.num_envs, device=self.device)
-        self.robot_entity_cfg = SceneEntityCfg("robot", joint_names=self.cfg.robot_arm_names, body_names=["panda_hand"])
-        self.ik_commands = torch.zeros(self.scene.num_envs, 7, device=self.device)
-
-        # Setup for the end effector control
-        self.start_ee_pos = torch.tensor([[0.5, 0.0, 0.5, 0.707, 0, 0.707, 0]], device=self.device) 
-        self.actions_raw = torch.zeros((self.num_envs,self.cfg.action_space), device=self.device)
-        self.actions_new = torch.zeros((self.num_envs,7), device=self.device)
-        self.actions_new[:,:] = torch.ones_like(self.actions_new)*self.start_ee_pos[0] # Starting EE position
-        self.deltas = torch.zeros((self.num_envs, 3), device = self.device)
-        self.betas = torch.zeros((self.num_envs,3), device = self.device) 
-        self.quat = torch.zeros((self.num_envs, 4), device = self.device)
-
-        self.betas[:,0] = 1.0 # The rotation axis is fixed
-
          # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
         frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -348,69 +341,12 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
 
-        # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
-        self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
-        # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
-
-        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
-
-        if (self.counter >= 10) & (self.counter < 20):
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.01,-0.02])        
-
-        if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
-        
-        # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
-        # if self.counter == 70:
-        #     particle_pos, vel = self.liquid.get_particles_position(0)
-        #     torch.save(torch.tensor(particle_pos),f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos_small.pt")
-
-        self.counter += 1
-
-        # Build the quaternion
-        # Calculate half the angle
-        half_angle = self.alphas / 2.0
-        
-        # Compute the quaternion components
-        self.quat[:,0] = torch.cos(half_angle)
-        self.quat[:,1] = self.betas[:,0] * torch.sin(half_angle)
-        self.quat[:,2] = self.betas[:,1] * torch.sin(half_angle)
-        self.quat[:,3] = self.betas[:,2] * torch.sin(half_angle)
-        
-
-        #  Apply action at the end effector 
-        self.actions_new[:,1] = self.actions_new[:,1]+self.deltas[:,0] # y-axis
-        self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
-        self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
-
-        self.ik_commands[:] = self.actions_new
-        self.diff_ik_controller.set_command(self.ik_commands)
-
-        # Calculate joint movements to achieve the previous end effector position
-        jacobian = self._robot.root_physx_view.get_jacobians()[:, self.ee_jacobi_idx, :, self.robot_entity_cfg.joint_ids]
-        ee_pose_w = self._robot.data.body_state_w[:, self.robot_entity_cfg.body_ids[0], 0:7]
-        root_pose_w = self._robot.data.root_state_w[:, 0:7]
-        joint_pos = self._robot.data.joint_pos[:, self.robot_entity_cfg.joint_ids]
-        ee_pos_b, ee_quat_b = subtract_frame_transforms(
-            root_pose_w[:, 0:3], root_pose_w[:, 3:7], ee_pose_w[:, 0:3], ee_pose_w[:, 3:7]
-        )
-
-        joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
-        
-        # Markers
-        self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
-        self.goal_marker.visualize(self.ik_commands[:, 0:3] + self.scene.env_origins, self.ik_commands[:, 3:7])
-
-        # Joint positions to give to the robot as command
-        self.joint_pos_des = torch.clamp(joint_pos_des, self.robot_dof_lower_limits[:7], self.robot_dof_upper_limits[:7])
-
+        self.actions = actions.clone().clamp(-1.0, 1.0)
+        targets = self.robot_dof_targets + self.robot_dof_speed_scales[:7] * self.dt * self.actions * self.cfg.action_scale
+        self.robot_dof_targets[:] = torch.clamp(targets, self.robot_dof_lower_limits[:7], self.robot_dof_upper_limits[:7])
 
     def _apply_action(self):
-        self._robot.set_joint_position_target(self.joint_pos_des, joint_ids=self._robot_arm_idx)
+        self._robot.set_joint_position_target(self.robot_dof_targets, joint_ids=self._robot_arm_idx)
         self._robot.set_joint_position_target(self.ee_target, joint_ids=self._robot_finger_idx[0])
         
     # post-physics step calls
@@ -453,14 +389,10 @@ class FrankaPouringEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         self.env_ids = env_ids
 
-        # Reset end effector controller
-        self.robot_entity_cfg.resolve(self.scene)
-        self.ee_jacobi_idx = self.robot_entity_cfg.body_ids[0] - 1
-        self.diff_ik_controller.reset()
-        self.counter = 0 # Also resets counters
+        # Reset counters
+        self.counter = 0
         self.index_image = 1
         self.index0 = 1
-        self.actions_new = torch.ones_like(self.actions_new)*self.start_ee_pos[0] # Starting EE position
 
         # Reset the glass
         glass_init_pos = self._glass.data.default_root_state.clone()[env_ids]
@@ -472,7 +404,7 @@ class FrankaPouringEnv(DirectRLEnv):
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
         lower_bound = torch.tensor([0,-0.3,0],device=self.device)
         upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
@@ -509,7 +441,7 @@ class FrankaPouringEnv(DirectRLEnv):
             / (self.robot_dof_upper_limits[:7] - self.robot_dof_lower_limits[:7])
             - 1.0
         )
-        joint_vel = self._robot.data.joint_vel[:,:7] * 0.1
+        joint_vel = self._robot.data.joint_vel[:,:7] * self.cfg.dof_velocity_scale
 
         # Relative position
         relative_pos = source_pos - target_pos
