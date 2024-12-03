@@ -148,7 +148,7 @@ class IsaacLabCustomWrapper(Wrapper):
 class Shared(GaussianMixin, DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
                  clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum",
-                 num_envs=2, num_layers=1, hidden_size=1024, sequence_length=128):
+                 num_envs=2, num_layers=1, hidden_size=512, sequence_length=32):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
         DeterministicMixin.__init__(self, clip_actions)
@@ -163,13 +163,17 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
                           num_layers=self.num_layers,
                           batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 32),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
+                                 nn.ELU(),
+                                 nn.Linear(512, 256),
+                                 nn.ELU(),
+                                 nn.Linear(256, 128),
                                  nn.ELU(),)
 
-        self.mean_layer = nn.Linear(32, self.num_actions)
+        self.mean_layer = nn.Linear(128, self.num_actions)
         self.log_std_parameter = nn.Parameter(torch.ones(self.num_actions))
 
-        self.value_layer = nn.Linear(32, 1)
+        self.value_layer = nn.Linear(128, 1)
 
     def act(self, inputs, role):
         if role == "policy":

@@ -224,6 +224,10 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # reward scales
     inside_weight = 1.0
     outside_weight = -1.0
+    source_pos_weight = -1.
+    source_ground_weight = -1.
+    source_vel_weight = -0.05
+    actions_weight = -10.
 
 
 
@@ -266,7 +270,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.NO_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -285,10 +289,13 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid_num_particles = self.liquid_init_pos.size(0)
         self.liquid_init_pos = self.liquid_init_pos.cpu().numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
         self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
+        
+        # Reward and observations
         self.reward = np.zeros((self.num_envs))
-        self.standard_reward = np.zeros((self.num_envs))
         self.obs_reward_in = np.zeros((self.num_envs))
         self.obs_reward_out = np.zeros((self.num_envs))
+        self.particle_fraction_in = np.zeros((self.num_envs,1))
+        self.particle_fraction_out = np.zeros((self.num_envs,1))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -350,19 +357,19 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
+        self.deltas = self.actions_raw[:,:2].clamp(-0.1,0.1)
         self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
-        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
+        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        # self.deltas = torch.zeros_like(self.deltas)
+        # self.alphas = torch.zeros_like(self.alphas)
 
-        if (self.counter >= 10) & (self.counter < 20):
-            self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.01,-0.02])        
+        # if (self.counter >= 10) & (self.counter < 20):
+        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.01,-0.02])        
 
-        if self.counter == 50:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+        # if self.counter == 50:
+        #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 70:
@@ -416,37 +423,45 @@ class FrankaPouringEnv(DirectRLEnv):
     # post-physics step calls
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = torch.any(torch.tensor(self.standard_reward, device=self.device) < -0.5) # Reset if most liquid poured outside
+        terminated = torch.any(torch.tensor(self.obs_reward_out, device=self.device) > 0.5) # Reset if most liquid poured outside
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
     def _get_rewards(self) -> torch.Tensor:
-        # Refresh the intermediate values after the physics steps
+        # Target and source position
+        target_pos = self._container.data.root_pos_w - self.scene.env_origins
+        source_pos = self._glass.data.root_pos_w - self.scene.env_origins
+        source_vel = self._glass.data.root_lin_vel_w
 
         # Compute reward for each environment
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
-            print(pos[250,2])
-
-            container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
-
-            self.reward[i] = self.compute_reward(container=container_pos,
-                                particles=pos,
-                                limit_height=self.cfg.container_height,
-                                inside_weight=self.cfg.inside_weight,
-                                outside_weight=self.cfg.outside_weight,
-                                radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
+            # Computes fractions
+            self.particle_fraction_in[i,0], self.particle_fraction_out[i,0] =self.particle_fractions_func(
+                target = target_pos[i].cpu().numpy(),
+                particles = pos,
+                limit_height = self.cfg.container_height,
+                radius = self.cfg.container_radius,
+                num_particles = self.liquid_num_particles
+            )
             
-            self.standard_reward[i] = self.compute_reward(container=container_pos,
-                                particles=pos,
-                                limit_height=self.cfg.container_height,
-                                inside_weight=1.0,
-                                outside_weight=-1.0,
-                                radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
+        particle_fraction_in = torch.tensor(self.particle_fraction_in, device = self.device)
+        particle_fraction_out = torch.tensor(self.particle_fraction_out, device = self.device)
 
-        # print(self.reward)
+        self.reward = self.compute_reward(particles_inside = particle_fraction_in, 
+                       particles_outside = particle_fraction_out,
+                       source_pos = source_pos,
+                       target_pos = target_pos,
+                       source_vel = source_vel,
+                       actions = self.actions,
+                       limit_height=self.cfg.container_height,
+                       inside_weight = self.cfg.inside_weight, 
+                       outside_weight = self.cfg.outside_weight,
+                       source_pos_weight = self.cfg.source_pos_weight,
+                       source_ground_weight=self.cfg.source_ground_weight,
+                       source_vel_weight = self.cfg.source_vel_weight,
+                       actions_weight = self.cfg.actions_weight)
+
         return torch.tensor(self.reward, device=self.device)
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -518,23 +533,11 @@ class FrankaPouringEnv(DirectRLEnv):
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
 
-            container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
-
-            self.obs_reward_in[i] = self.compute_reward(container=container_pos,
+            self.obs_reward_in[i], self.obs_reward_out[i] = self.particle_fractions_func(target=target_pos[i].cpu().numpy(),
                                 particles=pos,
                                 limit_height=self.cfg.container_height,
-                                inside_weight=1.0,
-                                outside_weight=0.,
                                 radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
-            
-            self.obs_reward_out[i] = self.compute_reward(container=container_pos,
-                                particles=pos,
-                                limit_height=self.cfg.container_height,
-                                inside_weight=0.,
-                                outside_weight=1.0,
-                                radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
+                                num_particles=self.liquid_num_particles,)
             
         obs_reward_in = torch.tensor(self.obs_reward_in, device = self.device).unsqueeze(1)
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
@@ -575,16 +578,63 @@ class FrankaPouringEnv(DirectRLEnv):
         return torch.cat((w, x, y, z),dim=-1)
 
     def compute_reward(self, 
-                       container: np.array, 
-                       particles: np.array, 
-                       limit_height: float, 
+                       particles_inside: torch.tensor, 
+                       particles_outside: torch.tensor,
+                       source_pos: torch.tensor,
+                       target_pos: torch.tensor,
+                       source_vel: torch.tensor,
+                       actions: torch.tensor,
+                       limit_height: float,
                        inside_weight: float, 
-                       outside_weight: float, 
-                       radius: float,
-                       num_particles: int):
+                       outside_weight: float,
+                       source_pos_weight: float,
+                       source_ground_weight: float,
+                       source_vel_weight: float,
+                       actions_weight: float):
             """
             Computes the reward by considering the fraction of particles inside the target container and outside of it
             """
+
+            # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
+            reward_in = inside_weight*particles_inside
+            reward_out = outside_weight*particles_outside
+
+            # Penalty for source distant from target 
+            dist = torch.norm(source_pos-target_pos, dim=1)
+            reward_dist = torch.zeros((self.num_envs, 1))
+            reward_dist += torch.where((dist>0.7) | (dist<0.25), 1., 0.).unsqueeze(1)
+            reward_dist = source_pos_weight*reward_dist
+
+            # Penalty for source glass on the ground or too low
+            reward_ground = torch.zeros((self.num_envs, 1))
+            reward_ground += torch.where(source_pos[:,2]<limit_height, 1., 0.).unsqueeze(1)
+            reward_ground = source_ground_weight*reward_ground
+
+            # Penalty for fast movements of the source container
+            vel = torch.norm(source_vel, dim=1)
+            reward_vel = torch.zeros((self.num_envs, 1))
+            reward_vel += torch.where(vel>2., 1., 0.).unsqueeze(1)
+            reward_vel = source_vel_weight*reward_vel
+
+            # Penalty for actions
+            reward_actions = torch.sum(actions**2, dim=-1)
+            reward_actions = actions_weight*reward_actions.unsqueeze(1)
+
+            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_actions 
+
+            return reward_tot
+    
+    def particle_fractions_func(self, 
+                       target: np.array,
+                       particles: np.array, 
+                       limit_height: float,
+                       radius: float,
+                       num_particles: int) -> tuple[np.array, np.array]:
+            """
+            Computes fraction of particles inside the target container and outside of it
+            Used for both the reward and the observations
+            """
+
             # Only considers particles below a certain limit height, which is ideally the target container's height
             index = np.where(particles[:,2]<=limit_height)
 
@@ -592,26 +642,20 @@ class FrankaPouringEnv(DirectRLEnv):
             y = particles[index,1]
             z = particles[index,2]
 
-            x_0 = container[0]
-            y_0 = container[1]
+            x_0 = target[0]
+            y_0 = target[1]
 
             # Calculates particles inside if they are inside the round container's radius 
             index_inside = np.where(((x-x_0)**2+(y-y_0)**2 < radius**2))
-            particles_inside = np.size(index_inside, 1)
+            particles_inside = np.size(index_inside, 1)/num_particles
 
             # Calculates particles outside if they are outside the round container's radius
             index_outside = np.where((x-x_0)**2+(y-y_0)**2 >= radius**2)
-            particles_outside = np.size(index_outside, 1)
+            particles_outside = np.size(index_outside, 1)/num_particles
 
-            # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
-            reward_in = inside_weight*particles_inside/num_particles
-            reward_out = outside_weight*particles_outside/num_particles
-            # print(reward_in)
-            # print(reward_out)
+            return particles_inside, particles_outside
 
-            reward_tot = reward_in + reward_out
 
-            return reward_tot
 
 
 
