@@ -139,7 +139,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 19}
+    observation_space = {"position": 14}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -227,7 +227,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     source_pos_weight = -1.
     source_ground_weight = -1.
     source_vel_weight = -0.05
-    actions_weight = -10.
+    actions_weight = -0.01
 
 
 
@@ -357,7 +357,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:2].clamp(-0.1,0.1)
+        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
         self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
@@ -487,7 +487,7 @@ class FrankaPouringEnv(DirectRLEnv):
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
         lower_bound = torch.tensor([0,-0.3,0],device=self.device)
         upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
@@ -514,7 +514,7 @@ class FrankaPouringEnv(DirectRLEnv):
         source_pos = self._glass.data.root_pos_w - self.scene.env_origins
         source_rot = self._glass.data.root_quat_w
         source_vel = self._glass.data.root_lin_vel_w
-        source_rot_vel = self._glass.data.root_ang_vel_w*0.1
+        source_rot_vel = self._glass.data.root_ang_vel_w
         target_pos = self._container.data.root_pos_w - self.scene.env_origins
         
         # Scaled joint quantities
@@ -543,8 +543,8 @@ class FrankaPouringEnv(DirectRLEnv):
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
 
         # Concatenate observations
-        self.obs["position"] = torch.cat((target_pos, dof_pos_scaled, joint_vel,obs_reward_in, obs_reward_out), dim=-1)
-        print(self.obs)
+        self.obs["position"] = torch.cat((relative_pos[:,1:], source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1)
+        print(source_rot[0])
 
         observations = {"policy": self.obs}
 

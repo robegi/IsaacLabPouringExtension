@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(19,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(11,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -188,7 +188,7 @@ class Shared(GaussianMixin, DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,19),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,11),dtype=np.float32)}))
         states = space["position"]
 
         terminated = inputs.get("terminated", None)
