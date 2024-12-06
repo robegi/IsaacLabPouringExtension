@@ -226,7 +226,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     outside_weight = -1.0
     source_pos_weight = -1.
     source_ground_weight = -1.
-    source_vel_weight = -0.05
+    source_vel_weight = -0.0
     actions_weight = -0.01
 
 
@@ -270,7 +270,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.NO_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
