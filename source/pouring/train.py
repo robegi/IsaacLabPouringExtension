@@ -56,7 +56,7 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         try:
             # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(11,),dtype=np.float32)
+            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(6,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -149,7 +149,7 @@ class IsaacLabCustomWrapper(Wrapper):
 class Policy(GaussianMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
                  clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum",
-                 num_envs=1, num_layers=3, hidden_size=64, sequence_length=128):
+                 num_envs=1, num_layers=5, hidden_size=512, sequence_length=128):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
@@ -163,9 +163,11 @@ class Policy(GaussianMixin, Model):
                             num_layers=self.num_layers,
                             batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 64),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
                                  nn.ReLU(),
-                                 nn.Linear(64, self.num_actions))
+                                 nn.Linear(512, 512),
+                                 nn.ReLU(),
+                                 nn.Linear(512, self.num_actions))
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def get_specification(self):
@@ -176,7 +178,7 @@ class Policy(GaussianMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,11),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,6),dtype=np.float32)}))
         states = space["position"]
 
         terminated = inputs.get("terminated", None)
@@ -217,12 +219,12 @@ class Policy(GaussianMixin, Model):
         # flatten the RNN output
         rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)  # (N, L, D ∗ Hout) -> (N * L, D ∗ Hout)
 
-        # Pendulum-v1 action_space is -2 to 2
-        return 2 * torch.tanh(self.net(rnn_output)), self.log_std_parameter, {"rnn": [rnn_states[0], rnn_states[1]]}
+        # Desired action_space is -0.01 to 0.01
+        return 0.01 * torch.tanh(self.net(rnn_output)), self.log_std_parameter, {"rnn": [rnn_states[0], rnn_states[1]]}
 
 class Value(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
-                 num_envs=1, num_layers=3, hidden_size=64, sequence_length=128):
+                 num_envs=1, num_layers=5, hidden_size=512, sequence_length=128):
         Model.__init__(self, observation_space, action_space, device)
         DeterministicMixin.__init__(self, clip_actions)
 
@@ -236,9 +238,11 @@ class Value(DeterministicMixin, Model):
                             num_layers=self.num_layers,
                             batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 64),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
                                  nn.ReLU(),
-                                 nn.Linear(64, 1))
+                                 nn.Linear(512, 512),
+                                 nn.ReLU(),
+                                 nn.Linear(512, 1))
 
     def get_specification(self):
         # batch size (N) is the number of envs
@@ -248,7 +252,7 @@ class Value(DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,11),dtype=np.float32)}))
+        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,6),dtype=np.float32)}))
         states = space["position"]
 
         terminated = inputs.get("terminated", None)

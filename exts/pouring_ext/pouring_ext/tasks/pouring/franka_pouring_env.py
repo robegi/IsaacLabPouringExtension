@@ -139,7 +139,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 14}
+    observation_space = {"position": 6}
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -226,8 +226,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     outside_weight = -1.0
     source_pos_weight = -1.
     source_ground_weight = -1.
-    source_vel_weight = -0.0
-    actions_weight = -0.01
+    source_vel_weight = -0.00
+    joint_vel_weight = -0.001
 
 
 
@@ -356,9 +356,9 @@ class FrankaPouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
-        self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:2].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,2].clamp(-0.1,0.1) # Rotation angle
+        self.actions_raw = actions.clone().clamp(-0.1,0.1)
+        self.deltas = self.actions_raw[:,:2]
+        self.alphas = self.actions_raw[:,2] # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -432,6 +432,8 @@ class FrankaPouringEnv(DirectRLEnv):
         target_pos = self._container.data.root_pos_w - self.scene.env_origins
         source_pos = self._glass.data.root_pos_w - self.scene.env_origins
         source_vel = self._glass.data.root_lin_vel_w
+        joint_vel = self._robot.data.joint_vel[:,:7]
+        joint_acc = self._robot.data.joint_acc[:,:7] 
 
         # Compute reward for each environment
         for i in range (self.num_envs):
@@ -453,14 +455,14 @@ class FrankaPouringEnv(DirectRLEnv):
                        source_pos = source_pos,
                        target_pos = target_pos,
                        source_vel = source_vel,
-                       actions = self.actions,
+                       joint_vel = joint_vel,
                        limit_height=self.cfg.container_height,
                        inside_weight = self.cfg.inside_weight, 
                        outside_weight = self.cfg.outside_weight,
                        source_pos_weight = self.cfg.source_pos_weight,
                        source_ground_weight=self.cfg.source_ground_weight,
                        source_vel_weight = self.cfg.source_vel_weight,
-                       actions_weight = self.cfg.actions_weight)
+                       joint_vel_weight = self.cfg.joint_vel_weight)
 
         return torch.tensor(self.reward, device=self.device)
 
@@ -512,7 +514,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Get quantities from the environment
         source_pos = self._glass.data.root_pos_w - self.scene.env_origins
-        source_rot = self._glass.data.root_quat_w
+        source_rot = self._glass.data.body_quat_w
         source_vel = self._glass.data.root_lin_vel_w
         source_rot_vel = self._glass.data.root_ang_vel_w
         target_pos = self._container.data.root_pos_w - self.scene.env_origins
@@ -529,6 +531,9 @@ class FrankaPouringEnv(DirectRLEnv):
         # Relative position
         relative_pos = source_pos - target_pos
 
+        # Rotation conversion to euler
+        source_rot = self.quaternion_to_euler(source_rot)[:,:,0]
+
         # Compute reward for each environment to use as observation
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
@@ -541,10 +546,13 @@ class FrankaPouringEnv(DirectRLEnv):
             
         obs_reward_in = torch.tensor(self.obs_reward_in, device = self.device).unsqueeze(1)
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
-
+        
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos[:,1:], source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1)
-        print(source_rot[0])
+        self.obs["position"] = torch.cat((relative_pos[:,1:], source_rot, self.actions_raw), dim=-1)
+
+        # print("Glass root:"+str(self.quaternion_to_euler(self._glass.data.root_quat_w[1])))
+        # print("Glass body:"+str(self.quaternion_to_euler(source_rot[1])))
+        # print("Pos:"+str(relative_pos))
 
         observations = {"policy": self.obs}
 
@@ -583,14 +591,14 @@ class FrankaPouringEnv(DirectRLEnv):
                        source_pos: torch.tensor,
                        target_pos: torch.tensor,
                        source_vel: torch.tensor,
-                       actions: torch.tensor,
+                       joint_vel: torch.tensor,
                        limit_height: float,
                        inside_weight: float, 
                        outside_weight: float,
                        source_pos_weight: float,
                        source_ground_weight: float,
                        source_vel_weight: float,
-                       actions_weight: float):
+                       joint_vel_weight: float):
             """
             Computes the reward by considering the fraction of particles inside the target container and outside of it
             """
@@ -616,11 +624,11 @@ class FrankaPouringEnv(DirectRLEnv):
             reward_vel += torch.where(vel>2., 1., 0.).unsqueeze(1)
             reward_vel = source_vel_weight*reward_vel
 
-            # Penalty for actions
-            reward_actions = torch.sum(actions**2, dim=-1)
-            reward_actions = actions_weight*reward_actions.unsqueeze(1)
+            # Penalty for joint velocities
+            reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
+            reward_joint_vel = joint_vel_weight*reward_joint_vel.unsqueeze(1)
 
-            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_actions 
+            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_joint_vel
 
             return reward_tot
     
@@ -654,6 +662,34 @@ class FrankaPouringEnv(DirectRLEnv):
             particles_outside = np.size(index_outside, 1)/num_particles
 
             return particles_inside, particles_outside
+
+    def quaternion_to_euler(self, q):
+        """
+        Convert quaternion (w, x, y, z) to Euler angles (roll, pitch, yaw).
+        
+        Parameters:
+        q (torch.Tensor): A tensor of shape (..., 4) where each quaternion is represented by 
+                        (w, x, y, z). The last dimension should have 4 elements representing 
+                        the quaternion.
+
+        Returns:
+        torch.Tensor: A tensor of shape (..., 3) representing the Euler angles (roll, pitch, yaw).
+        """
+        w, x, y, z = torch.split(q, 1, dim=-1)  # Split quaternion into w, x, y, z components
+        
+        # Compute roll (x-axis rotation)
+        roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x**2 + y**2))
+        
+        # Compute pitch (y-axis rotation)
+        pitch = torch.asin(torch.clamp(2 * (w * y - z * x), -1.0, 1.0))
+        
+        # Compute yaw (z-axis rotation)
+        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+        
+        # Stack Euler angles (roll, pitch, yaw) into a tensor
+        euler_angles = torch.cat((roll, pitch, yaw), dim=-1)
+        
+        return euler_angles
 
 
 
