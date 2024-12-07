@@ -61,7 +61,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
     decimation = 2
-    action_space = 3
+    action_space = 2
     state_space = 0
 
     # simulation
@@ -139,7 +139,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = {"position": 6}
+    observation_space = 5
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -224,10 +224,10 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # reward scales
     inside_weight = 1.0
     outside_weight = -1.0
-    source_pos_weight = -1.
-    source_ground_weight = -1.
+    source_pos_weight = -10.
+    source_ground_weight = -0
     source_vel_weight = -0.00
-    joint_vel_weight = -0.001
+    joint_vel_weight = -0.00
 
 
 
@@ -348,7 +348,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Target on the finger actuators to hold the glass
         self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
 
-        self.obs = {"position": torch.zeros((self.num_envs, self.cfg.observation_space["position"]), device = self.device)}
+        self.obs = {"position": torch.zeros((self.num_envs, self.cfg.observation_space), device = self.device)}
 
 
     # pre-physics step calls
@@ -356,9 +356,9 @@ class FrankaPouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
-        self.actions_raw = actions.clone().clamp(-0.1,0.1)
-        self.deltas = self.actions_raw[:,:2]
-        self.alphas = self.actions_raw[:,2] # Rotation angle
+        self.actions_raw = actions.clone().clamp(torch.tensor([-0.01,-0.5]),torch.tensor([0.01,0.5]))
+        self.deltas = self.actions_raw[:,:1]
+        self.alphas = self.actions_raw[:,1] # Rotation angle
         # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
@@ -391,7 +391,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         #  Apply action at the end effector 
         self.actions_new[:,1] = self.actions_new[:,1]+self.deltas[:,0] # y-axis
-        self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
+        # self.actions_new[:,2] = self.actions_new[:,2]+self.deltas[:,1] # z-axis
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
@@ -463,8 +463,10 @@ class FrankaPouringEnv(DirectRLEnv):
                        source_ground_weight=self.cfg.source_ground_weight,
                        source_vel_weight = self.cfg.source_vel_weight,
                        joint_vel_weight = self.cfg.joint_vel_weight)
+        
+        reward = torch.tensor(self.reward, device=self.device).squeeze(1)
 
-        return torch.tensor(self.reward, device=self.device)
+        return reward.clone()
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
@@ -548,13 +550,13 @@ class FrankaPouringEnv(DirectRLEnv):
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
         
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos[:,1:], source_rot, self.actions_raw), dim=-1)
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in), dim=-1).type(torch.float32)
 
         # print("Glass root:"+str(self.quaternion_to_euler(self._glass.data.root_quat_w[1])))
         # print("Glass body:"+str(self.quaternion_to_euler(source_rot[1])))
         # print("Pos:"+str(relative_pos))
 
-        observations = {"policy": self.obs}
+        observations = {"policy": self.obs["position"].clone()}
 
         return observations
 
@@ -609,8 +611,9 @@ class FrankaPouringEnv(DirectRLEnv):
 
             # Penalty for source distant from target 
             dist = torch.norm(source_pos-target_pos, dim=1)
+            relative_pos = source_pos-target_pos
             reward_dist = torch.zeros((self.num_envs, 1))
-            reward_dist += torch.where((dist>0.7) | (dist<0.25), 1., 0.).unsqueeze(1)
+            reward_dist += torch.where((relative_pos[:,1]>0) | (relative_pos[:,1]<-0.25), 1., 0.).unsqueeze(1)
             reward_dist = source_pos_weight*reward_dist
 
             # Penalty for source glass on the ground or too low
@@ -627,6 +630,7 @@ class FrankaPouringEnv(DirectRLEnv):
             # Penalty for joint velocities
             reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
             reward_joint_vel = joint_vel_weight*reward_joint_vel.unsqueeze(1)
+
 
             reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_joint_vel
 

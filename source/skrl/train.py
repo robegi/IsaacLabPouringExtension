@@ -55,8 +55,8 @@ class IsaacLabCustomWrapper(Wrapper):
         """Observation space
         """
         try:
-            # return self._unwrapped.single_observation_space["policy"]
-            return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(6,),dtype=np.float32)
+            return self._unwrapped.single_observation_space["policy"]
+            # return gymnasium.spaces.Box(low=-1.0,high=2.0,shape=(5,),dtype=np.float32)
         except:
             return self._unwrapped.observation_space["policy"]
 
@@ -80,9 +80,9 @@ class IsaacLabCustomWrapper(Wrapper):
         :rtype: tuple of torch.Tensor and any other info
         """
         self._observations, reward, terminated, truncated, self._info = self._env.step(actions)
-        observations = self._observation_to_tensor(self._observations["policy"])
+        # observations = self._observation_to_tensor(self._observations["policy"])
 
-        return observations, reward.view(-1, 1), terminated.view(-1, 1), truncated.view(-1, 1), self._info
+        return self.observations, reward.view(-1, 1), terminated.view(-1, 1), truncated.view(-1, 1), self._info
 
     def reset(self) -> Tuple[torch.Tensor, Any]:
         """Reset the environment
@@ -92,13 +92,13 @@ class IsaacLabCustomWrapper(Wrapper):
         """
         if self._reset_once:
             observations, self._info = self._env.reset()
-            observations = self._observation_to_tensor(observations["policy"])
+            # observations = self._observation_to_tensor(observations["policy"])
             self._reset_once = False
 
             return observations, self._info
 
         observations, self._info = self._env.reset()
-        observations = self._observation_to_tensor(observations["policy"])
+        # observations = self._observation_to_tensor(observations["policy"])
 
         return observations, self._info
 
@@ -178,14 +178,15 @@ class Policy(GaussianMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,6),dtype=np.float32)}))
-        states = space["position"]
+        # space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,5),dtype=np.float32)}))
+        # states = space["position"]
 
         terminated = inputs.get("terminated", None)
         hidden_states, cell_states = inputs["rnn"][0], inputs["rnn"][1]
 
         # training
         if self.training:
+            print("STATES: "+str(states[1]))
             rnn_input = states.view(-1, self.sequence_length, states.shape[-1])  # (N, L, Hin): N=batch_size, L=sequence_length
             hidden_states = hidden_states.view(self.num_layers, -1, self.sequence_length, hidden_states.shape[-1])  # (D * num_layers, N, L, Hout)
             cell_states = cell_states.view(self.num_layers, -1, self.sequence_length, cell_states.shape[-1])  # (D * num_layers, N, L, Hcell)
@@ -220,7 +221,7 @@ class Policy(GaussianMixin, Model):
         rnn_output = torch.flatten(rnn_output, start_dim=0, end_dim=1)  # (N, L, D ∗ Hout) -> (N * L, D ∗ Hout)
 
         # Desired action_space is -0.01 to 0.01
-        return 0.01 * torch.tanh(self.net(rnn_output)), self.log_std_parameter, {"rnn": [rnn_states[0], rnn_states[1]]}
+        return self.net(rnn_output), self.log_std_parameter, {"rnn": [rnn_states[0], rnn_states[1]]}
 
 class Value(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
@@ -252,14 +253,15 @@ class Value(DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         states = inputs["states"]
-        space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,6),dtype=np.float32)}))
-        states = space["position"]
+        # space = self.tensor_to_space(states, gymnasium.spaces.Dict({"position": gymnasium.spaces.Box(low=-np.inf,high=np.inf,shape=(1,5),dtype=np.float32)}))
+        # states = space["position"]
 
         terminated = inputs.get("terminated", None)
         hidden_states, cell_states = inputs["rnn"][0], inputs["rnn"][1]
 
         # training
         if self.training:
+            
             rnn_input = states.view(-1, self.sequence_length, states.shape[-1])  # (N, L, Hin): N=batch_size, L=sequence_length
 
             hidden_states = hidden_states.view(self.num_layers, -1, self.sequence_length, hidden_states.shape[-1])  # (D * num_layers, N, L, Hout)
@@ -300,13 +302,13 @@ class Value(DeterministicMixin, Model):
 
 # load and wrap the Isaac Lab environment
 env = load_isaaclab_env(task_name="Isaac-Franka-Pouring-Direct-v0")
-env = IsaacLabCustomWrapper(env)
+env = wrap_env(env)
 
 device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=64, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=1, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -320,7 +322,7 @@ models["value"] = Value(env.observation_space, env.action_space, device, num_env
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 64  # memory_size
+cfg["rollouts"] = 1  # memory_size
 cfg["learning_epochs"] = 4
 cfg["mini_batches"] = 1  # 16 * 512 / 8192
 cfg["discount_factor"] = 0.99
@@ -339,10 +341,10 @@ cfg["value_loss_scale"] = 1.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None
 cfg["time_limit_bootstrap"] = True
-cfg["state_preprocessor"] = RunningStandardScaler
-cfg["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": env.device}
-cfg["value_preprocessor"] = RunningStandardScaler
-cfg["value_preprocessor_kwargs"] = {"size": 1, "device": env.device}
+cfg["state_preprocessor"] = None
+cfg["state_preprocessor_kwargs"] = {}
+cfg["value_preprocessor"] = None
+cfg["value_preprocessor_kwargs"] = {}
 # logging to TensorBoard and write checkpoints (in timesteps)
 cfg["experiment"]["write_interval"] = 16
 cfg["experiment"]["checkpoint_interval"] = 80
