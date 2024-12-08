@@ -4,7 +4,7 @@ params:
   # environment wrapper clipping
   env:
     clip_observations: 5.0
-    clip_actions: 1.0
+    clip_actions: 10.0
 
   algo:
     name: a2c_continuous
@@ -39,7 +39,7 @@ params:
     rnn:
       name: lstm
       units: 512
-      layers: 5
+      layers: 2
 
   load_checkpoint: False
   load_path: ''
@@ -77,5 +77,5 @@ params:
     mini_epochs: 5
     critic_coef: 4
     clip_value: True
-    seq_length: 4
+    seq_length: 2
     bounds_loss_coef: 0.0001

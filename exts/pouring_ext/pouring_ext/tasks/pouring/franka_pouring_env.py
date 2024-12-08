@@ -60,7 +60,7 @@ from .pourit_utils.predictor import LiquidPredictor
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333/5*2  # 200 timesteps
-    decimation = 2
+    decimation = 1
     action_space = 2
     state_space = 0
 
@@ -139,7 +139,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = 5
+    observation_space = 20
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -224,10 +224,15 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # reward scales
     inside_weight = 1.0
     outside_weight = -1.0
-    source_pos_weight = 0
+    source_pos_weight = 0.
     source_ground_weight = -0
     source_vel_weight = -0.00
-    joint_vel_weight = -0.00
+    joint_vel_weight = 0
+    actions_weight = -0.01
+
+    # Action scales
+    action_scale_lin = 0.01
+    action_scale_rot = 0.1
 
 
 
@@ -361,8 +366,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:1]
-        self.alphas = self.actions_raw[:,1] # Rotation angle
+        self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
+        self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
         # self.deltas = torch.zeros_like(self.deltas)
@@ -431,7 +436,7 @@ class FrankaPouringEnv(DirectRLEnv):
     # post-physics step calls
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        self.terminated = torch.any(torch.tensor(self.obs_reward_out, device=self.device) > 0.5) # Reset if most liquid poured outside
+        self.terminated = torch.tensor(self.obs_reward_out, device=self.device) > 0.5 # Reset if most liquid poured outside
         self.truncated = self.episode_length_buf >= self.max_episode_length - 1
         return self.terminated, self.truncated
 
@@ -464,16 +469,19 @@ class FrankaPouringEnv(DirectRLEnv):
                        target_pos = target_pos,
                        source_vel = source_vel,
                        joint_vel = joint_vel,
+                       actions=self.actions_raw,
                        limit_height=self.cfg.container_height,
                        inside_weight = self.cfg.inside_weight, 
                        outside_weight = self.cfg.outside_weight,
                        source_pos_weight = self.cfg.source_pos_weight,
                        source_ground_weight=self.cfg.source_ground_weight,
                        source_vel_weight = self.cfg.source_vel_weight,
-                       joint_vel_weight = self.cfg.joint_vel_weight)
+                       joint_vel_weight = self.cfg.joint_vel_weight,
+                       actions_weight=self.cfg.actions_weight)
         
         reward = torch.tensor(self.reward, device=self.device).squeeze(1)
-
+        print("Reward: "+str(reward[0]))
+        print("***")
         return reward.clone()
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -559,13 +567,14 @@ class FrankaPouringEnv(DirectRLEnv):
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
         
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in), dim=-1).type(torch.float32)
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out, dof_pos_scaled, joint_vel), dim=-1).type(torch.float32)
 
-        # print("Source rotation: "+str(source_rot))
-        # print("Observed reward in: "+str(obs_reward_in))
-        # print("Observed reward out: "+str(obs_reward_out))
-        # print("Relative pos: "+str(relative_pos[:,1].unsqueeze(1)))
-        # print("***")
+        print("Source rotation: "+str(source_rot))
+        print("Observed reward in: "+str(obs_reward_in))
+        print("Observed reward out: "+str(obs_reward_out))
+        print("Relative pos: "+str(relative_pos[:,1].unsqueeze(1)))
+        print("Previous actions: "+str(self.actions_raw))
+        print("***")
 
         observations = {"policy": self.obs["position"].clone()}
 
@@ -605,13 +614,15 @@ class FrankaPouringEnv(DirectRLEnv):
                        target_pos: torch.tensor,
                        source_vel: torch.tensor,
                        joint_vel: torch.tensor,
+                       actions: torch.tensor,
                        limit_height: float,
                        inside_weight: float, 
                        outside_weight: float,
                        source_pos_weight: float,
                        source_ground_weight: float,
                        source_vel_weight: float,
-                       joint_vel_weight: float):
+                       joint_vel_weight: float,
+                       actions_weight: float):
             """
             Computes the reward by considering the fraction of particles inside the target container and outside of it
             """
@@ -642,12 +653,19 @@ class FrankaPouringEnv(DirectRLEnv):
             reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
             reward_joint_vel = joint_vel_weight*reward_joint_vel.unsqueeze(1)
 
-            # print("Reward distance: "+str(reward_dist))
-            # print("Reward in: "+str(reward_in))
-            # print("Reward out: "+str(reward_out))
-            # print("***")
+            # Penalty for action magnitude
+            reward_actions = torch.sum(actions**2, dim=-1)
+            reward_actions= actions_weight*reward_actions.unsqueeze(1)
 
-            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_joint_vel
+
+            print("Reward distance: "+str(reward_dist))
+            # print("Reward joint vel: "+str(reward_joint_vel))
+            print("Reward actions: "+str(reward_actions))
+            print("Reward in: "+str(reward_in))
+            print("Reward out: "+str(reward_out))
+            print("***")
+
+            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_joint_vel +reward_actions
 
             return reward_tot
     
