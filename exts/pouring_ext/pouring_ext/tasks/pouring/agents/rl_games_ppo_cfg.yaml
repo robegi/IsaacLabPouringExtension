@@ -27,7 +27,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [512, 512, 256, 128]
+      units: [512]
       activation: elu
       d2rl: False
 
@@ -39,7 +39,7 @@ params:
     rnn:
       name: lstm
       units: 512
-      layers: 4
+      layers: 5
 
   load_checkpoint: False
   load_path: ''
@@ -73,7 +73,7 @@ params:
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 96
-    minibatch_size: 256
+    minibatch_size: 64
     mini_epochs: 5
     critic_coef: 4
     clip_value: True
