@@ -59,15 +59,15 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5*2  # 200 timesteps
-    decimation = 5
-    action_space = 1
+    episode_length_s = 8.3333  # 200 timesteps
+    decimation = 24
+    action_space = 2
     state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120,
-        render_interval=decimation,
+        render_interval=1,
         disable_contact_processing=True,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -139,7 +139,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = 4
+    # observation_space = 4
+    observation_space = 6
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -231,7 +232,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.001
 
     # Action scales
-    action_scale_lin = 0.01
+    action_scale_lin = 0.01*10
     action_scale_rot = 0.1
 
 
@@ -278,7 +279,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.NO_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -365,10 +366,10 @@ class FrankaPouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
-        self.actions_raw = actions.clone()
-        # self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
-        # self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
-        self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
+        self.actions_raw = actions.clone().clamp(-1.0,1.0)
+        self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
+        self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
+        # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
         # self.deltas = torch.zeros_like(self.deltas)
@@ -510,7 +511,7 @@ class FrankaPouringEnv(DirectRLEnv):
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
         lower_bound = torch.tensor([0,-0.3,0],device=self.device)
         upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
@@ -570,7 +571,9 @@ class FrankaPouringEnv(DirectRLEnv):
         
         # Concatenate observations
         # self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out, dof_pos_scaled, joint_vel), dim=-1).type(torch.float32)
-        self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        # self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        
 
         # print("Source rotation: "+str(source_rot))
         # print("Observed reward in: "+str(obs_reward_in))
