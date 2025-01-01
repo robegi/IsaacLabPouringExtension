@@ -59,9 +59,9 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5*3  # 300 timesteps
-    decimation = 1
-    action_space = 1
+    episode_length_s = 5  # 100 timesteps
+    decimation = 60
+    action_space = 2
     state_space = 0
 
     # simulation
@@ -139,7 +139,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Observation space
-    observation_space = 4
+    observation_space = 6
+    # observation_space = 4
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -234,7 +235,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.001
 
     # Action scales
-    action_scale_lin = 0.01
+    action_scale_lin = 0.05
     action_scale_rot = 1.
 
 
@@ -371,11 +372,13 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
+        self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
+        self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
+        # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
-        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
+        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        # self.deltas = torch.zeros_like(self.deltas)
+        # self.alphas = torch.zeros_like(self.alphas)
 
         # if (self.counter >= 100) & (self.counter < 120):
         #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, -0.01,-0.02]) /2   
@@ -420,7 +423,7 @@ class FrankaPouringEnv(DirectRLEnv):
         joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
         
         # Markers
-        self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
+        # self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
         self.goal_marker.visualize(self.ik_commands[:, 0:3] + self.scene.env_origins, self.ik_commands[:, 3:7])
 
         # Joint positions to give to the robot as command
@@ -566,7 +569,8 @@ class FrankaPouringEnv(DirectRLEnv):
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
         
         # Concatenate observations
-        self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        # self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
 
         # print("Source rotation: "+str(source_rot))
         # print("Observed reward in: "+str(obs_reward_in))
@@ -629,6 +633,8 @@ class FrankaPouringEnv(DirectRLEnv):
             # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
             reward_in = inside_weight*particles_inside
             reward_out = outside_weight*particles_outside
+            # reward_in = inside_weight*torch.where(particles_inside<0.5,particles_inside,0.5)
+            # reward_out = outside_weight*(particles_outside+torch.where(particles_inside>0.5,particles_inside-0.5,0))
 
             # Penalty for source distant from target 
             dist = torch.norm(source_pos-target_pos, dim=1)
