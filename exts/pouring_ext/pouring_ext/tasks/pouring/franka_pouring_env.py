@@ -59,8 +59,8 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 5  # 100 timesteps
-    decimation = 60
+    episode_length_s = 10  # 100 timesteps
+    decimation = 1
     action_space = 2
     state_space = 0
 
@@ -235,8 +235,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.001
 
     # Action scales
-    action_scale_lin = 0.05
-    action_scale_rot = 1.
+    action_scale_lin = 0.02
+    action_scale_rot = 0.5
 
 
 
@@ -381,7 +381,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # self.alphas = torch.zeros_like(self.alphas)
 
         # if (self.counter >= 100) & (self.counter < 120):
-        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, -0.01,-0.02]) /2   
+        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, 0.03,-0.]) /2   
 
         # if self.counter == 200:
         #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
