@@ -18,7 +18,7 @@ class FluidObjectCfg():
     # Fluid properties
     particle_mass : float
     density : float
-    viscosity: float = 0.91
+    viscosity: float 
 
      
 
