@@ -59,8 +59,8 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 5  # 100 timesteps
-    decimation = 60
+    episode_length_s = 10  
+    decimation = 15
     action_space = 2
     state_space = 0
 
@@ -76,7 +76,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**22)
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**24)
     )
 
     # scene
@@ -232,11 +232,11 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     source_ground_weight = -0
     source_vel_weight = -0.00
     joint_vel_weight = 0
-    actions_weight = -0.001
+    actions_weight = -0.1
 
     # Action scales
-    action_scale_lin = 0.05
-    action_scale_rot = 1.
+    action_scale_lin = 0.02
+    action_scale_rot = 0.5
 
 
 
@@ -282,7 +282,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.FULL_RENDERING
+        rendermode = Sim_Context.RenderMode.NO_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -371,8 +371,8 @@ class FrankaPouringEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
-        self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
+        self.actions_raw = actions.clone().clamp(-1.,1.)
+        self.deltas = self.actions_raw[:,0]*self.cfg.action_scale_lin
         self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
         # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
@@ -405,7 +405,7 @@ class FrankaPouringEnv(DirectRLEnv):
         
 
         #  Apply action at the end effector 
-        self.actions_new[:,:3] = self.actions_new[:,:3]+self.deltas
+        self.actions_new[:,1] += self.deltas
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
@@ -506,16 +506,17 @@ class FrankaPouringEnv(DirectRLEnv):
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
-        lower_bound = torch.tensor([0,-0.3,0],device=self.device)
-        upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        lower_bound = torch.tensor([0,-0.05,0],device=self.device)
+        upper_bound = torch.tensor([0,0.05,0],device=self.device)
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
         # Reset the liquid 
         fill_index = torch.randint(0,3,(env_ids.size(0),))
         for i in env_ids:
-            init_pos = np.array(self.liquid_init_pos[fill_index[i]])
+            # init_pos = np.array(self.liquid_init_pos[fill_index[i]])
+            init_pos = np.array(self.liquid_init_pos[1])
             init_vel = np.zeros_like(init_pos)
             self.liquid.set_particles_position(init_pos, init_vel, i)
         
@@ -570,7 +571,7 @@ class FrankaPouringEnv(DirectRLEnv):
         
         # Concatenate observations
         self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
-        # self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        # self.obs["position"] = torch.cat((dof_pos_scaled, joint_vel, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
 
         # print("Source rotation: "+str(source_rot))
         # print("Observed reward in: "+str(obs_reward_in))
@@ -631,10 +632,10 @@ class FrankaPouringEnv(DirectRLEnv):
             """
 
             # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
-            reward_in = inside_weight*particles_inside
-            reward_out = outside_weight*particles_outside
-            # reward_in = inside_weight*torch.where(particles_inside<0.5,particles_inside,0.5)
-            # reward_out = outside_weight*(particles_outside+torch.where(particles_inside>0.5,particles_inside-0.5,0))
+            # reward_in = inside_weight*particles_inside
+            # reward_out = outside_weight*particles_outside
+            reward_in = inside_weight*torch.where(particles_inside<0.5,particles_inside,0.5)
+            reward_out = outside_weight*(particles_outside+torch.where(particles_inside>0.5,particles_inside-0.5,0))
 
             # Penalty for source distant from target 
             dist = torch.norm(source_pos-target_pos, dim=1)

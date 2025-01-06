@@ -7,36 +7,24 @@ models:
   separate: False
   policy:  # see gaussian_model parameters
     class: GaussianMixin
-    clip_actions: False
+    clip_actions: True
     clip_log_std: True
     min_log_std: -20.0
     max_log_std: 2.0
     initial_log_std: 0.0
     network:
-      - name: features_extractor
-        input: permute(STATES, (0, 3, 1, 2))  # PyTorch NHWC -> NCHW. Warning: don't permute for JAX since it expects NHWC
-        layers:
-          - conv2d: {out_channels: 32, kernel_size: 1, stride: 1000, padding: 0}
-          - flatten
-        activations: relu
       - name: net
-        input: features_extractor
-        layers: [8]
+        input: STATES
+        layers: [512, 512, 256]
         activations: elu
     output: ACTIONS
   value:  # see deterministic_model parameters
     class: DeterministicMixin
     clip_actions: False
     network:
-      - name: features_extractor
-        input: permute(STATES, (0, 3, 1, 2))  # PyTorch NHWC -> NCHW. Warning: don't permute for JAX since it expects NHWC
-        layers:
-          - conv2d: {out_channels: 32, kernel_size: 1, stride: 1000, padding: 0}
-          - flatten
-        activations: relu
       - name: net
-        input: features_extractor
-        layers: [8]
+        input: STATES
+        layers: [512, 512, 256]
         activations: elu
     output: ONE
 
@@ -52,7 +40,7 @@ memory:
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   class: PPO
-  rollouts: 64
+  rollouts: 16
   learning_epochs: 4
   mini_batches: 32
   discount_factor: 0.99
@@ -81,12 +69,12 @@ agent:
     directory: "pouring_camera_direct"
     experiment_name: ""
     write_interval: auto
-    checkpoint_interval: auto
+    checkpoint_interval: 500
 
 
 # Sequential trainer
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 32000
+  timesteps: 2500
   environment_info: log

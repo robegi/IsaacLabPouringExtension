@@ -27,7 +27,7 @@ params:
           val: 0
         fixed_sigma: True
     mlp:
-      units: [256]
+      units: [512, 512, 256]
       activation: elu
       d2rl: False
 
@@ -36,10 +36,10 @@ params:
       regularizer:
         name: None
 
-    rnn:
-      name: lstm
-      units: 512
-      layers: 2
+    # rnn:
+    #   name: lstm
+    #   units: 512
+    #   layers: 2
 
   load_checkpoint: False
   load_path: ''
@@ -72,10 +72,10 @@ params:
     entropy_coef: 0.001
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 4
-    minibatch_size: 2
+    horizon_length: 16
+    minibatch_size: 64
     mini_epochs: 5
     critic_coef: 4
     clip_value: True
-    seq_length: 2
+    seq_length: 8
     bounds_loss_coef: 0.0001

@@ -149,7 +149,7 @@ class IsaacLabCustomWrapper(Wrapper):
 class Policy(GaussianMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
                  clip_log_std=True, min_log_std=-20, max_log_std=2, reduction="sum",
-                 num_envs=1, num_layers=5, hidden_size=512, sequence_length=128):
+                 num_envs=1, num_layers=2, hidden_size=512, sequence_length=8):
         Model.__init__(self, observation_space, action_space, device)
         GaussianMixin.__init__(self, clip_actions, clip_log_std, min_log_std, max_log_std, reduction)
 
@@ -163,11 +163,9 @@ class Policy(GaussianMixin, Model):
                             num_layers=self.num_layers,
                             batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 256),
                                  nn.ReLU(),
-                                 nn.Linear(512, 512),
-                                 nn.ReLU(),
-                                 nn.Linear(512, self.num_actions))
+                                 nn.Linear(256, self.num_actions))
         self.log_std_parameter = nn.Parameter(torch.zeros(self.num_actions))
 
     def get_specification(self):
@@ -224,7 +222,7 @@ class Policy(GaussianMixin, Model):
 
 class Value(DeterministicMixin, Model):
     def __init__(self, observation_space, action_space, device, clip_actions=False,
-                 num_envs=1, num_layers=5, hidden_size=512, sequence_length=128):
+                 num_envs=1, num_layers=2, hidden_size=512, sequence_length=8):
         Model.__init__(self, observation_space, action_space, device)
         DeterministicMixin.__init__(self, clip_actions)
 
@@ -238,11 +236,9 @@ class Value(DeterministicMixin, Model):
                             num_layers=self.num_layers,
                             batch_first=True)  # batch_first -> (batch, sequence, features)
 
-        self.net = nn.Sequential(nn.Linear(self.hidden_size, 512),
+        self.net = nn.Sequential(nn.Linear(self.hidden_size, 256),
                                  nn.ReLU(),
-                                 nn.Linear(512, 512),
-                                 nn.ReLU(),
-                                 nn.Linear(512, 1))
+                                 nn.Linear(256, 1))
 
     def get_specification(self):
         # batch size (N) is the number of envs
@@ -307,7 +303,7 @@ device = env.device
 
 
 # instantiate a memory as rollout buffer (any memory can be used for this)
-memory = RandomMemory(memory_size=1, num_envs=env.num_envs, device=device)
+memory = RandomMemory(memory_size=64, num_envs=env.num_envs, device=device)
 
 
 # instantiate the agent's models (function approximators).
@@ -321,12 +317,12 @@ models["value"] = Value(env.observation_space, env.action_space, device, num_env
 # configure and instantiate the agent (visit its documentation to see all the options)
 # https://skrl.readthedocs.io/en/latest/api/agents/ppo.html#configuration-and-hyperparameters
 cfg = PPO_DEFAULT_CONFIG.copy()
-cfg["rollouts"] = 1  # memory_size
-cfg["learning_epochs"] = 4
-cfg["mini_batches"] = 1  # 16 * 512 / 8192
+cfg["rollouts"] = 64  # memory_size
+cfg["learning_epochs"] = 5
+cfg["mini_batches"] = 128  # 16 * 128 / 64
 cfg["discount_factor"] = 0.99
 cfg["lambda"] = 0.95
-cfg["learning_rate"] = 1e-4
+cfg["learning_rate"] = 5e-4
 cfg["learning_rate_scheduler"] = KLAdaptiveRL
 cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.008}
 cfg["random_timesteps"] = 0
@@ -336,7 +332,7 @@ cfg["ratio_clip"] = 0.2
 cfg["value_clip"] = 0.2
 cfg["clip_predicted_values"] = True
 cfg["entropy_loss_scale"] = 0
-cfg["value_loss_scale"] = 1.0
+cfg["value_loss_scale"] = 2.0
 cfg["kl_threshold"] = 0
 cfg["rewards_shaper"] = None
 cfg["time_limit_bootstrap"] = True
@@ -345,8 +341,8 @@ cfg["state_preprocessor_kwargs"] = {}
 cfg["value_preprocessor"] = None
 cfg["value_preprocessor_kwargs"] = {}
 # logging to TensorBoard and write checkpoints (in timesteps)
-cfg["experiment"]["write_interval"] = 16
-cfg["experiment"]["checkpoint_interval"] = 80
+cfg["experiment"]["write_interval"] = 100
+cfg["experiment"]["checkpoint_interval"] = 150
 cfg["experiment"]["directory"] = "runs/torch/pouring_ppo"
 
 agent = PPO(models=models,
@@ -358,7 +354,7 @@ agent = PPO(models=models,
 
 
 # configure and instantiate the RL trainer
-cfg_trainer = {"timesteps": 32000, "headless": True}
+cfg_trainer = {"timesteps": 10000, "headless": True}
 trainer = SequentialTrainer(cfg=cfg_trainer, env=env, agents=agent)
 
 # # start training
