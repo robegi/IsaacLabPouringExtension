@@ -62,7 +62,7 @@ from .pourit_utils.predictor import LiquidPredictor
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10  # 100 timesteps
-    decimation = 1
+    decimation = 15
     action_space = 2
     state_space = 0
     num_channels = 1
@@ -250,7 +250,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     source_ground_weight = -0
     source_vel_weight = -0.00
     joint_vel_weight = 0
-    actions_weight = -0.001
+    actions_weight = -0.1
 
     # Action scales
     action_scale_lin = 0.02
@@ -416,7 +416,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:1]*self.cfg.action_scale_lin
+        self.deltas = self.actions_raw[:,0]*self.cfg.action_scale_lin
         self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
         # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
@@ -449,7 +449,7 @@ class FrankaPouringEnv(DirectRLEnv):
         
 
         #  Apply action at the end effector 
-        self.actions_new[:,:3] = self.actions_new[:,:3]+self.deltas
+        self.actions_new[:,1] += self.deltas
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
