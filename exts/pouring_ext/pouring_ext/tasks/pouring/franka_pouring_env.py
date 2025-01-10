@@ -27,6 +27,8 @@ from omni.physx import acquire_physx_interface
 
 from pouring_ext.tasks.pouring.fluid_object import FluidObjectCfg, FluidObject
 from omni.isaac.lab.assets import RigidObject, RigidObjectCfg
+from omni.isaac.lab.sensors import Camera, CameraCfg, TiledCamera, TiledCameraCfg, save_images_to_file
+import omni.replicator.core as rep
 from omni.isaac.lab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from omni.isaac.lab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from omni.isaac.lab.controllers import DifferentialIKController, DifferentialIKControllerCfg
@@ -37,7 +39,6 @@ from omni.isaac.lab.utils.math import subtract_frame_transforms
 from omni.isaac.core import PhysicsContext
 import math
 import quaternion
-from omni.isaac.lab.sensors import Camera, CameraCfg, TiledCamera, TiledCameraCfg, save_images_to_file
 import carb.settings
 import os
 from omni.isaac.lab.utils import convert_dict_to_backend
@@ -47,10 +48,10 @@ import matplotlib as plt
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from omni.isaac.lab.sim import SimulationContext 
-import omni.replicator.core as rep
 from copy import deepcopy
 import time
 import gymnasium as gym
+from omni.isaac.lab.utils.math import sample_uniform
 
 import argparse
 from omegaconf import OmegaConf
@@ -60,16 +61,16 @@ from .pourit_utils.predictor import LiquidPredictor
 @configclass
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 8.3333/5*2  # 200 timesteps
-    decimation = 2
-    action_space = 4
-    num_channels = 1 # Camera channels in the observations
+    episode_length_s = 10  # 100 timesteps
+    decimation = 15
+    action_space = 2
     state_space = 0
+    num_channels = 1
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 120,
-        render_interval=decimation,
+        render_interval=1,
         disable_contact_processing=True,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -78,7 +79,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        render=sim_utils.RenderCfg(enable_translucency=True)
+        physx = sim_utils.PhysxCfg(gpu_max_particle_contacts=2**22)
     )
 
     # scene
@@ -103,13 +104,13 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         ),
         init_state=ArticulationCfg.InitialStateCfg(
             joint_pos={
-                "panda_joint1": -1.0763,
-                "panda_joint2": -0.4690,
-                "panda_joint3": 1.0088,
-                "panda_joint4": -2.2224,
-                "panda_joint5": 2.8825,
-                "panda_joint6": 2.6945,
-                "panda_joint7": 1.4151, #+-2.897
+                "panda_joint1": -1.4460,
+                "panda_joint2": 0.2157,
+                "panda_joint3": 1.2273,
+                "panda_joint4": -2.4090,
+                "panda_joint5": 2.8540,
+                "panda_joint6": 2.2554,
+                "panda_joint7": 0.7622, 
                 "panda_finger_joint.*": 0.04,
             },
             pos=(0.0, 0.0, 0),
@@ -143,7 +144,6 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # camera
     camera_pos = (1.0, 0.39, 0.5)
     camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
-
     camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="world"),
@@ -155,8 +155,9 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         height=150,
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
-    # NOTE PourIt always crops the image to 480x480, so use that as observations. Channels first in pytorch network. Position is of the EE relative to the target container
-    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 13}
+    # NOTE PourIt always crops the image to 480x480. Channels first in pytorch network. Position is of the EE relative to the target container
+    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 4}
+
 
     # Joint names to actuate along the arm
     robot_arm_names = list()
@@ -181,9 +182,9 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # Spawn position for both the glass, the container and the fluid
-    spawn_pos_glass = Gf.Vec3f(0.61, 0, 0.45)
-    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0.0,0,0.1)
-    spawn_pos_container = Gf.Vec3f(0.61, 0, 0)
+    spawn_pos_glass = Gf.Vec3f(0.61, -0.1, 0.25)
+    spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0.0,0,0.05)
+    spawn_pos_container = Gf.Vec3f(0.61, 0., 0)
 
     # Set Glass as rigid object
     glass = RigidObjectCfg(
@@ -231,16 +232,29 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # Add liquid configuration parameters
     # Direct spawn
     liquidCfg = FluidObjectCfg()
-    liquidCfg.numParticlesX = 5
-    liquidCfg.numParticlesY = 5
-    liquidCfg.numParticlesZ = 100
+    liquidCfg.numParticlesX = 8
+    liquidCfg.numParticlesY = 8
+    liquidCfg.numParticlesZ = 44
     liquidCfg.density = 0.0
     liquidCfg.particle_mass = 0.001
     liquidCfg.particleSpacing = 0.005
+    liquidCfg.viscosity = 0.91
+
+    # Fill levels inside the source container
+    particles_init_pos_list = ["particle_init_pos_low", "particle_init_pos_mid", "particle_init_pos_high"]
 
     # reward scales
     inside_weight = 1.0
-    outside_weight = -0.1
+    outside_weight = -1.0
+    source_pos_weight = 0.
+    source_ground_weight = -0
+    source_vel_weight = -0.00
+    joint_vel_weight = 0
+    actions_weight = -0.1
+
+    # Action scales
+    action_scale_lin = 0.01
+    action_scale_rot = 0.2
 
 
 
@@ -274,12 +288,8 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.stage = get_current_stage()
 
-        self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
-        self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
-        self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
-
-        self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.action_constraints_low = torch.tensor([-0.3, -math.pi], device=self.device)
+        self.action_constraints_high = torch.tensor([0.3, 0], device=self.device)
 
 
     def _setup_scene(self):       
@@ -301,12 +311,23 @@ class FrankaPouringEnv(DirectRLEnv):
         self.liquid = FluidObject(cfg=self.cfg.liquidCfg, 
                              lower_pos = self.cfg.spawn_pos_fluid)
         self.liquid.spawn_fluid_direct()
-        self.liquid_init_pos = torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/particle_pos.pt")
-        self.liquid_num_particles = self.liquid_init_pos.size(0)
-        self.liquid_init_pos = self.liquid_init_pos.numpy()+np.ones_like(self.liquid_init_pos)*np.array([0, 0, 0.01])
-        self.liquid_init_vel = np.zeros_like(self.liquid_init_pos)
+
+        # # Initial particle position, from spawn or from saved file
+        # self.liquid_init_pos, self.liquid_init_vel = torch.tensor(self.liquid.get_particles_position(0) , device = self.device)
+        self.liquid_init_pos = list()
+        self.liquid_init_vel = list()
+
+        for i in range(len(self.cfg.particles_init_pos_list)):
+            self.liquid_init_pos.append(torch.load(f"{self.cfg.CURRENT_PATH}/usd_models/{self.cfg.particles_init_pos_list[i]}.pt").cpu().numpy())
+            self.liquid_init_pos[i] += np.ones_like(self.liquid_init_pos[i])*np.array([0, 0, 0.01])
+            self.liquid_init_vel.append(np.zeros_like(self.liquid_init_pos[i]))
+        
+        # Reward and observations
         self.reward = np.zeros((self.num_envs))
-        self.standard_reward = np.zeros((self.num_envs))
+        self.obs_reward_in = np.zeros((self.num_envs))
+        self.obs_reward_out = np.zeros((self.num_envs))
+        self.particle_fraction_in = np.zeros((self.num_envs,1))
+        self.particle_fraction_out = np.zeros((self.num_envs,1))
         
         # Glass, position it before the robot
         self._glass = RigidObject(self.cfg.glass)
@@ -322,12 +343,12 @@ class FrankaPouringEnv(DirectRLEnv):
 
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
-        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)      
+        self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)     
 
         # Camera
         self._camera = TiledCamera(self.cfg.camera) 
         self.data_type = 'rgb'
-        self.scene.sensors["camera"] = self._camera
+        self.scene.sensors["camera"] = self._camera 
 
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
@@ -344,16 +365,15 @@ class FrankaPouringEnv(DirectRLEnv):
         self.ik_commands = torch.zeros(self.scene.num_envs, 7, device=self.device)
 
         # Setup for the end effector control
-        self.start_ee_pos = torch.tensor([[0.5, 0.0, 0.5, 0.707, 0, 0.707, 0]], device=self.device) 
+        self.start_ee_pos = torch.tensor([0.5, -0.1, 0.3, 0.707, 0, 0.707, 0], device=self.device) 
         self.actions_raw = torch.zeros((self.num_envs,self.cfg.action_space), device=self.device)
-        self.actions_new = torch.zeros((self.num_envs,7), device=self.device)
-        self.actions_new[:,:] = torch.ones_like(self.actions_new)*self.start_ee_pos[0] # Starting EE position
+        self.actions_new = torch.ones((self.num_envs,7), device=self.device)*self.start_ee_pos # Starting EE position
+        self.actions_total = torch.zeros((self.num_envs,self.cfg.action_space), device=self.device)
         self.deltas = torch.zeros((self.num_envs, 3), device = self.device)
         self.betas = torch.zeros((self.num_envs,3), device = self.device) 
         self.quat = torch.zeros((self.num_envs, 4), device = self.device)
 
         self.betas[:,0] = 1.0 # The rotation axis is fixed
-        self.theta_0 = None # Initial angle for observations
 
          # Marker on the end effector and the desired pose
         frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -366,7 +386,6 @@ class FrankaPouringEnv(DirectRLEnv):
         self.ee_target = torch.zeros((self.num_envs, 2), device = self.device)  
 
         # Create replicator writer
-
         self.output_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", "camera")
         self.rep_writer = rep.BasicWriter(
             output_dir=self.output_dir,
@@ -375,9 +394,7 @@ class FrankaPouringEnv(DirectRLEnv):
             colorize_instance_segmentation=self._camera.cfg.colorize_instance_segmentation,
             colorize_semantic_segmentation=self._camera.cfg.colorize_semantic_segmentation,
         )
-
         # PourIt model
-
         # PourIt configuration
         self.args = argparse.Namespace
         self.args.config = f"{self.cfg.CURRENT_PATH}/pourit_utils/configs/pourit_seen_ours.yaml"
@@ -385,15 +402,12 @@ class FrankaPouringEnv(DirectRLEnv):
         self.args.work_dir = None
         self.args.crop_size = 480
         self.args.model_path = f"{self.cfg.CURRENT_PATH}/pourit_utils/checkpoints/iter_014000.pth"
-
         self.predictor_cfg = OmegaConf.load(self.args.config)
         self.predictor_cfg.dataset.crop_size = self.args.crop_size
         if self.args.work_dir is not None:
             self.predictor_cfg.work_dir.dir = self.args.work_dir
-
         self.predictor = LiquidPredictor(self.predictor_cfg, self.args)
-
-        self.obs = {"camera": torch.zeros((self.num_envs, 1, self.cfg.camera.width, self.cfg.camera.height), device = self.device), "position": torch.zeros((self.num_envs, 4), device = self.device)}
+        self.obs = {"camera": torch.zeros((self.num_envs, self.cfg.num_channels, self.cfg.camera.width, self.cfg.camera.height), device = self.device), "position": torch.zeros((self.num_envs, 6), device = self.device)}
 
 
     # pre-physics step calls
@@ -402,27 +416,27 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Actions are defined as deltas to apply to the current EE position. Rotations with quaternions, first extracted as axis and angle
         self.actions_raw = actions.clone()
-        self.deltas = self.actions_raw[:,:3].clamp(-0.01,0.01)
-        self.alphas = self.actions_raw[:,3].clamp(-0.5,0.5) # Rotation angle
-        # betas = self.actions_raw[:,4:7].clamp(-1,1) # Rotation axis' cosines
+        self.deltas = self.actions_raw[:,0]*self.cfg.action_scale_lin
+        self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
+        # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
         # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
         # self.deltas = torch.zeros_like(self.deltas)
         # self.alphas = torch.zeros_like(self.alphas)
 
-        # if (self.counter >= 10) & (self.counter < 20):
-        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([-0.0, -0.01,-0.02])        
+        # if (self.counter >= 100) & (self.counter < 120):
+        #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, 0.03,-0.]) /2   
 
-        # if self.counter == 50:
+        # if self.counter == 200:
         #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
-        #     particle_pos, vel = self.liquid.get_particles_position()
-        #     torch.save(torch.tensor(particle_pos),"/home/roberto/LiquidTask/exts/liquid_task/liquid_task/tasks/liquid/direct_4/usd_models/particle_pos.pt")
+        #     particle_pos, vel = self.liquid.get_particles_position(0)
+        #     torch.save(torch.tensor(particle_pos),f"{self.cfg.CURRENT_PATH}/usd_models/particle_init_pos_high.pt")
 
         self.counter += 1
-
+        
         # Build the quaternion
         # Calculate half the angle
         half_angle = self.alphas / 2.0
@@ -434,8 +448,8 @@ class FrankaPouringEnv(DirectRLEnv):
         self.quat[:,3] = self.betas[:,2] * torch.sin(half_angle)
         
 
-        #  Apply action at the end effector NOTE: to add sequence of poses like in the video, put start_ee_pos[index] here below instead of start_ee_pos[0]
-        self.actions_new[:,:3] = self.actions_new[:,:3]+self.deltas
+        #  Apply action at the end effector 
+        self.actions_new[:,1] += self.deltas
         self.actions_new[:,3:7] = self.multiply_quaternions(self.quat[:],self.actions_new[:,3:7])
 
         self.ik_commands[:] = self.actions_new
@@ -453,7 +467,7 @@ class FrankaPouringEnv(DirectRLEnv):
         joint_pos_des = self.diff_ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, joint_pos)
         
         # Markers
-        self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
+        # self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
         self.goal_marker.visualize(self.ik_commands[:, 0:3] + self.scene.env_origins, self.ik_commands[:, 3:7])
 
         # Joint positions to give to the robot as command
@@ -467,41 +481,55 @@ class FrankaPouringEnv(DirectRLEnv):
     # post-physics step calls
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        terminated = torch.any(torch.tensor(self.standard_reward, device=self.device) < -0.5) # Reset if most liquid poured outside
-        truncated = self.episode_length_buf >= self.max_episode_length - 1
-        return terminated, truncated
+        self.terminated = torch.tensor(self.obs_reward_out, device=self.device) > 0.5 # Reset if most liquid poured outside
+        self.truncated = self.episode_length_buf >= self.max_episode_length - 1
+        return self.terminated, self.truncated
 
     def _get_rewards(self) -> torch.Tensor:
-        # Refresh the intermediate values after the physics steps
+        # Target and source position
+        target_pos = self._container.data.root_pos_w - self.scene.env_origins
+        source_pos = self._glass.data.root_pos_w - self.scene.env_origins
+        source_vel = self._glass.data.root_lin_vel_w
+        joint_vel = self._robot.data.joint_vel[:,:7]
+        joint_acc = self._robot.data.joint_acc[:,:7] 
 
         # Compute reward for each environment
         for i in range (self.num_envs):
             pos, vel = self.liquid.get_particles_position(i)
-
-            container_pos = self._container.data.root_pos_w[i].cpu().numpy() - self.scene.env_origins[i].cpu().numpy()
-
-            self.reward[i] = self.compute_reward(container=container_pos,
-                                particles=pos,
-                                limit_height=self.cfg.container_height,
-                                inside_weight=self.cfg.inside_weight,
-                                outside_weight=self.cfg.outside_weight,
-                                radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
+            # Computes fractions
+            self.particle_fraction_in[i,0], self.particle_fraction_out[i,0] =self.particle_fractions_func(
+                target = target_pos[i].cpu().numpy(),
+                particles = pos,
+                limit_height = self.cfg.container_height,
+                radius = self.cfg.container_radius,
+            )
             
-            self.standard_reward[i] = self.compute_reward(container=container_pos,
-                                particles=pos,
-                                limit_height=self.cfg.container_height,
-                                inside_weight=1.0,
-                                outside_weight=-1.0,
-                                radius=self.cfg.container_radius,
-                                num_particles=self.liquid_num_particles)
+        particle_fraction_in = torch.tensor(self.particle_fraction_in, device = self.device)
+        particle_fraction_out = torch.tensor(self.particle_fraction_out, device = self.device)
 
-        # print(self.reward)
-        return torch.tensor(self.reward, device=self.device)
+        self.reward = self.compute_reward(particles_inside = particle_fraction_in, 
+                       particles_outside = particle_fraction_out,
+                       source_pos = source_pos,
+                       target_pos = target_pos,
+                       source_vel = source_vel,
+                       joint_vel = joint_vel,
+                       actions=self.actions_raw,
+                       limit_height=self.cfg.container_height,
+                       inside_weight = self.cfg.inside_weight, 
+                       outside_weight = self.cfg.outside_weight,
+                       source_pos_weight = self.cfg.source_pos_weight,
+                       source_ground_weight=self.cfg.source_ground_weight,
+                       source_vel_weight = self.cfg.source_vel_weight,
+                       joint_vel_weight = self.cfg.joint_vel_weight,
+                       actions_weight=self.cfg.actions_weight)
+        
+        reward = torch.tensor(self.reward, device=self.device).squeeze(1)
+        # print("Reward: "+str(reward[0]))
+        # print("***")
+        return reward.clone()
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
-        self.env_ids = env_ids
 
         # Reset end effector controller
         self.robot_entity_cfg.resolve(self.scene)
@@ -510,26 +538,31 @@ class FrankaPouringEnv(DirectRLEnv):
         self.counter = 0 # Also resets counters
         self.index_image = 1
         self.index0 = 1
-        self.actions_new = torch.ones_like(self.actions_new)*self.start_ee_pos[0] # Starting EE position
+        self.actions_new = torch.ones_like(self.actions_new)*self.start_ee_pos # Starting EE position
+        self.actions_total = torch.zeros((self.num_envs,self.cfg.action_space), device=self.device)
 
         # Reset the glass
         glass_init_pos = self._glass.data.default_root_state.clone()[env_ids]
         glass_init_pos[:,:3] = glass_init_pos[:,:3] + self.scene.env_origins[env_ids]
         self._glass.write_root_state_to_sim(glass_init_pos,env_ids=env_ids)
 
-        # Save initial angle to compute observations
-        if self.theta_0 is None:
-            self.theta_0 = 2*torch.acos(self._glass.data.default_root_state.clone()[0,3])
-
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
+        lower_bound = torch.tensor([0,-0.05,0],device=self.device)
+        upper_bound = torch.tensor([0,0.05,0],device=self.device)
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
         # Reset the liquid 
+        fill_index = torch.randint(0,3,(env_ids.size(0),))
+        counter_fluid = 0
         for i in env_ids:
-            self.liquid.set_particles_position(self.liquid_init_pos, self.liquid_init_vel, i)
+            init_pos = np.array(self.liquid_init_pos[fill_index[counter_fluid]])
+            init_vel = np.zeros_like(init_pos)
+            self.liquid.set_particles_position(init_pos, init_vel, i)
+            counter_fluid += 1
         
         # Reset the robot and randomizes the initial position (to implement)
         joint_pos = self._robot.data.default_joint_pos[env_ids]
@@ -544,56 +577,79 @@ class FrankaPouringEnv(DirectRLEnv):
 
     def _get_observations(self) -> dict:
 
+        # Camera
+        
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
-
         # Choose whether to save the images or not
         images_are_being_saved = False
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
-
-        # Process the image using PourIt
-        pourit_output = torch.tensor(self.predictor.inference(camera_data.cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
         
         # Process image
-        for i in self.env_ids:
-
+        for i in range(self.num_envs):
+            # Process the image using PourIt
+            pourit_output = torch.tensor(self.predictor.inference(camera_data[i].cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
+        
             # Use mask as observation
-            self.obs["camera"][i] = torch.tensor(pourit_output[i], device = self.device)
-
+            self.obs["camera"][i] = torch.tensor(pourit_output, device = self.device)
             # Save processed image in output folder
             if images_are_being_saved:
-                self.save_image(pourit_output.permute([0,2,3,1])[i], self.index_image, i, "processed")
-
+                self.save_image(pourit_output.permute([0,2,3,1]), self.index_image, i, "processed")
 
         self.index_image +=1 # Index for saving the images
-
         # Subtract the mean from the camera input
         mean_tensor = torch.mean(self.obs["camera"], dim=(2, 3), keepdim=True)
         self.obs["camera"] -= mean_tensor
 
         # Calculate the relative position of the source container
-
         # Get quantities from the environment
-        source_pos = self._glass.data.root_pos_w 
-        source_rot = self._glass.data.root_quat_w
+        source_pos = self._glass.data.root_pos_w - self.scene.env_origins
+        source_rot = self._glass.data.body_quat_w
         source_vel = self._glass.data.root_lin_vel_w
         source_rot_vel = self._glass.data.root_ang_vel_w
-        target_pos = self._container.data.root_pos_w 
+        target_pos = self._container.data.root_pos_w - self.scene.env_origins
+        
+        # Scaled joint quantities
+        dof_pos_scaled = (
+            2.0
+            * (self._robot.data.joint_pos[:,:7] - self.robot_dof_lower_limits[:7])
+            / (self.robot_dof_upper_limits[:7] - self.robot_dof_lower_limits[:7])
+            - 1.0
+        )
+        joint_vel = self._robot.data.joint_vel[:,:7] * 0.1
 
         # Relative position
         relative_pos = source_pos - target_pos
 
-        # Rotation
-        theta = 2*torch.acos(source_rot[:,0]) - self.theta_0
-        theta = theta/math.pi # Normalize angle
+        # Rotation conversion to euler
+        source_rot = self.quaternion_to_euler(source_rot)[:,:,0]/torch.pi
 
+        # Compute reward for each environment to use as observation
+        for i in range (self.num_envs):
+            pos, vel = self.liquid.get_particles_position(i)
+
+            self.obs_reward_in[i], self.obs_reward_out[i] = self.particle_fractions_func(target=target_pos[i].cpu().numpy(),
+                                particles=pos,
+                                limit_height=self.cfg.container_height,
+                                radius=self.cfg.container_radius,)
+            
+        obs_reward_in = torch.tensor(self.obs_reward_in, device = self.device).unsqueeze(1)
+        obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
+        
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos, source_vel, source_rot, source_rot_vel), dim=-1)
-        print(self.obs["position"])
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw), dim=-1).type(torch.float32)
+        # self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
 
-        observations = {"policy": self.obs}
+        # print("Source rotation: "+str(source_rot))
+        # print("Observed reward in: "+str(obs_reward_in))
+        # print("Observed reward out: "+str(obs_reward_out))
+        # print("Relative pos: "+str(relative_pos[:,1].unsqueeze(1)))
+        # print("Previous actions: "+str(self.actions_raw))
+        # print("***")
+
+        observations = {"policy": {"camera": self.obs["camera"].clone(),"position": self.obs["position"].clone()}}
 
         return observations
 
@@ -624,37 +680,80 @@ class FrankaPouringEnv(DirectRLEnv):
 
         return torch.cat((w, x, y, z),dim=-1)
 
-    def save_image(self, file, index_image, index_env, name):
-        # Save images from camera 
-        if not torch.is_tensor(file):
-            file = torch.tensor(file, device=self.device)
-
-        # Adjust dimensions
-        if len(file.shape)<4:
-            file = torch.unsqueeze(file, 0)
-
-        # Expand number of channels
-        if file.shape[3]==1:
-            #print(file.unique())
-            file_new = torch.zeros((file.shape[0],file.shape[1],file.shape[2],3), device=self.device)
-            file_new[:] = file 
-            file = file_new
-            #print(file.unique())
-
-        save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
-
-
     def compute_reward(self, 
-                       container: np.array, 
-                       particles: np.array, 
-                       limit_height: float, 
+                       particles_inside: torch.tensor, 
+                       particles_outside: torch.tensor,
+                       source_pos: torch.tensor,
+                       target_pos: torch.tensor,
+                       source_vel: torch.tensor,
+                       joint_vel: torch.tensor,
+                       actions: torch.tensor,
+                       limit_height: float,
                        inside_weight: float, 
-                       outside_weight: float, 
-                       radius: float,
-                       num_particles: int):
+                       outside_weight: float,
+                       source_pos_weight: float,
+                       source_ground_weight: float,
+                       source_vel_weight: float,
+                       joint_vel_weight: float,
+                       actions_weight: float):
             """
             Computes the reward by considering the fraction of particles inside the target container and outside of it
             """
+
+            # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
+            reward_in = inside_weight*particles_inside
+            reward_out = outside_weight*particles_outside
+            # reward_in = inside_weight*torch.where(particles_inside<0.5,particles_inside,0.5)
+            # reward_out = outside_weight*(particles_outside+torch.where(particles_inside>0.5,particles_inside-0.5,0))
+
+            # Penalty for source distant from target 
+            dist = torch.norm(source_pos-target_pos, dim=1)
+            relative_pos = source_pos-target_pos
+            reward_dist = torch.zeros((self.num_envs, 1))
+            reward_dist += torch.where((relative_pos[:,1]>0) | (relative_pos[:,1]<-0.25), 1., 0.).unsqueeze(1)
+            reward_dist = source_pos_weight*reward_dist
+
+            # Penalty for source glass on the ground or too low
+            reward_ground = torch.zeros((self.num_envs, 1))
+            reward_ground += torch.where(source_pos[:,2]<limit_height, 1., 0.).unsqueeze(1)
+            reward_ground = source_ground_weight*reward_ground
+
+            # Penalty for fast movements of the source container
+            vel = torch.norm(source_vel, dim=1)
+            reward_vel = torch.zeros((self.num_envs, 1))
+            reward_vel += torch.where(vel>2., 1., 0.).unsqueeze(1)
+            reward_vel = source_vel_weight*reward_vel
+
+            # Penalty for joint velocities
+            reward_joint_vel = torch.sum(joint_vel**2, dim=-1)
+            reward_joint_vel = joint_vel_weight*reward_joint_vel.unsqueeze(1)
+
+            # Penalty for action magnitude
+            reward_actions = torch.sum(actions**2, dim=-1)
+            reward_actions= actions_weight*reward_actions.unsqueeze(1)
+
+
+            # print("Reward distance: "+str(reward_dist))
+            # print("Reward joint vel: "+str(reward_joint_vel))
+            # print("Reward actions: "+str(reward_actions))
+            # print("Reward in: "+str(reward_in))
+            # print("Reward out: "+str(reward_out))
+            # print("***")
+
+            reward_tot = reward_in + reward_out + reward_dist + reward_ground + reward_vel + reward_joint_vel +reward_actions
+
+            return reward_tot
+    
+    def particle_fractions_func(self, 
+                       target: np.array,
+                       particles: np.array, 
+                       limit_height: float,
+                       radius: float,) -> tuple[np.array, np.array]:
+            """
+            Computes fraction of particles inside the target container and outside of it
+            Used for both the reward and the observations
+            """
+
             # Only considers particles below a certain limit height, which is ideally the target container's height
             index = np.where(particles[:,2]<=limit_height)
 
@@ -662,26 +761,65 @@ class FrankaPouringEnv(DirectRLEnv):
             y = particles[index,1]
             z = particles[index,2]
 
-            x_0 = container[0]
-            y_0 = container[1]
+            x_0 = target[0]
+            y_0 = target[1]
 
             # Calculates particles inside if they are inside the round container's radius 
+            num_particles = len(particles)
             index_inside = np.where(((x-x_0)**2+(y-y_0)**2 < radius**2))
-            particles_inside = np.size(index_inside, 1)
+            particles_inside = np.size(index_inside, 1)/num_particles
 
             # Calculates particles outside if they are outside the round container's radius
             index_outside = np.where((x-x_0)**2+(y-y_0)**2 >= radius**2)
-            particles_outside = np.size(index_outside, 1)
+            particles_outside = np.size(index_outside, 1)/num_particles
 
-            # The weighted reward output is the fraction of insideoutside particles w.r.t. the total number of particles
-            reward_in = inside_weight*particles_inside/num_particles
-            reward_out = outside_weight*particles_outside/num_particles
-            # print(reward_in)
-            # print(reward_out)
+            return particles_inside, particles_outside
 
-            reward_tot = reward_in + reward_out
+    def quaternion_to_euler(self, q):
+        """
+        Convert quaternion (w, x, y, z) to Euler angles (roll, pitch, yaw).
+        
+        Parameters:
+        q (torch.Tensor): A tensor of shape (..., 4) where each quaternion is represented by 
+                        (w, x, y, z). The last dimension should have 4 elements representing 
+                        the quaternion.
 
-            return reward_tot
+        Returns:
+        torch.Tensor: A tensor of shape (..., 3) representing the Euler angles (roll, pitch, yaw).
+        """
+        w, x, y, z = torch.split(q, 1, dim=-1)  # Split quaternion into w, x, y, z components
+        
+        # Compute roll (x-axis rotation)
+        roll = torch.atan2(2 * (w * x + y * z), 1 - 2 * (x**2 + y**2))
+        
+        # Compute pitch (y-axis rotation)
+        pitch = torch.asin(torch.clamp(2 * (w * y - z * x), -1.0, 1.0))
+        
+        # Compute yaw (z-axis rotation)
+        yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+        
+        # Stack Euler angles (roll, pitch, yaw) into a tensor
+        euler_angles = torch.cat((roll, pitch, yaw), dim=-1)
+        
+        return euler_angles
+
+    def save_image(self, file, index_image, index_env, name):
+        # Save images from camera 
+        if not torch.is_tensor(file):
+            file = torch.tensor(file, device=self.device)
+        # Adjust dimensions
+        if len(file.shape)<4:
+            file = torch.unsqueeze(file, 0)
+        # Expand number of channels
+        if file.shape[3]==1:
+            #print(file.unique())
+            file_new = torch.zeros((file.shape[0],file.shape[1],file.shape[2],3), device=self.device)
+            file_new[:] = file 
+            file = file_new
+            #print(file.unique())
+        save_images_to_file(file, f"{self.cfg.CURRENT_PATH}/output/camera/{name}_{index_env}_{index_image}.png")
+
+
 
 
 

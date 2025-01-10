@@ -18,6 +18,7 @@ class FluidObjectCfg():
     # Fluid properties
     particle_mass : float
     density : float
+    viscosity: float 
 
      
 
@@ -38,13 +39,13 @@ class FluidObject():
         
     
 
-    def spawn_fluid_direct(self):
+    def spawn_fluid_direct(self, env_index: int = 0):
             
             # Particle System
             self.particleSystemPath = self.default_prim_path.AppendChild("particleSystem")
 
             # Particle points
-            self.particlesPath = Sdf.Path("/World/envs/env_0/particles")
+            self.particlesPath = Sdf.Path(f"/World/envs/env_{env_index}/particles")
 
             # solver iterations
             self._solverPositionIterations = 4
@@ -84,7 +85,7 @@ class FluidObject():
                 self.stage,
                 pbd_particle_material_path,
                 cohesion=10,
-                viscosity=0.91,
+                viscosity=self.cfg.viscosity,
                 surface_tension=0.74,
                 friction=0.1,
             )
@@ -130,12 +131,7 @@ class FluidObject():
                 lower, gridSpacing, self.cfg.numParticlesX, self.cfg.numParticlesY, self.cfg.numParticlesZ
             )
 
-            uniform_range = self.cfg.particleSpacing * 0.2
-
-            for i in range(len(positions)):
-                positions[i][0] += np.random.default_rng(45).uniform(-uniform_range, uniform_range)
-                positions[i][1] += np.random.default_rng(45).uniform(-uniform_range, uniform_range)
-                positions[i][2] += np.random.default_rng(45).uniform(-uniform_range, uniform_range)
+ 
             widths = [self.cfg.particleSpacing] * len(positions)
             
             self.particlesPrim = particleUtils.add_physx_particleset_points(
