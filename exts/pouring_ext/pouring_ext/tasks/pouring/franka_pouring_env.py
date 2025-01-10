@@ -62,7 +62,7 @@ from .pourit_utils.predictor import LiquidPredictor
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10  # 100 timesteps
-    decimation = 1
+    decimation = 15
     action_space = 2
     state_space = 0
     num_channels = 1
@@ -208,7 +208,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # Set target container as rigid object
     # Container data from original usd model
     container_height = 0.12
-    container_radius = 0.17/2
+    container_radius = 0.08/2
     container_base = 0.02
 
     container = RigidObjectCfg(
@@ -420,15 +420,15 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
         # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
-        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        self.deltas = torch.zeros_like(self.deltas)
-        self.alphas = torch.zeros_like(self.alphas)
+        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        # self.deltas = torch.zeros_like(self.deltas)
+        # self.alphas = torch.zeros_like(self.alphas)
 
         # if (self.counter >= 100) & (self.counter < 120):
         #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, 0.03,-0.]) /2   
 
-        if self.counter == 200:
-            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+        # if self.counter == 200:
+        #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
@@ -582,7 +582,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
         # Choose whether to save the images or not
-        images_are_being_saved = True
+        images_are_being_saved = False
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
