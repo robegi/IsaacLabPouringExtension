@@ -156,7 +156,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
     # observation_space = [camera.height, camera.width, num_channels] if not using PourIt
     # NOTE PourIt always crops the image to 480x480. Channels first in pytorch network. Position is of the EE relative to the target container
-    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 6}
+    observation_space = {"camera": [num_channels, camera.width, camera.height], "position": 4}
 
 
     # Joint names to actuate along the arm
@@ -253,8 +253,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     actions_weight = -0.1
 
     # Action scales
-    action_scale_lin = 0.02
-    action_scale_rot = 0.5
+    action_scale_lin = 0.01
+    action_scale_rot = 0.2
 
 
 
@@ -549,9 +549,9 @@ class FrankaPouringEnv(DirectRLEnv):
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
-        lower_bound = torch.tensor([0,-0.3,0],device=self.device)
-        upper_bound = torch.tensor([0,0.3,0],device=self.device)
-        # container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
+        lower_bound = torch.tensor([0,-0.05,0],device=self.device)
+        upper_bound = torch.tensor([0,0.05,0],device=self.device)
+        container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
         
@@ -582,20 +582,22 @@ class FrankaPouringEnv(DirectRLEnv):
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
         # Choose whether to save the images or not
-        images_are_being_saved = True
+        images_are_being_saved = False
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
-        # Process the image using PourIt
-        pourit_output = torch.tensor(self.predictor.inference(camera_data.cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
         
         # Process image
         for i in range(self.num_envs):
+            # Process the image using PourIt
+            pourit_output = torch.tensor(self.predictor.inference(camera_data[i].cpu().numpy(), input_size=(self.obs["camera"].shape[2],self.obs["camera"].shape[3])), device = self.device)
+        
             # Use mask as observation
-            self.obs["camera"][i] = torch.tensor(pourit_output[i], device = self.device)
+            self.obs["camera"][i] = torch.tensor(pourit_output, device = self.device)
             # Save processed image in output folder
             if images_are_being_saved:
-                self.save_image(pourit_output.permute([0,2,3,1])[i], self.index_image, i, "processed")
+                self.save_image(pourit_output.permute([0,2,3,1]), self.index_image, i, "processed")
+
         self.index_image +=1 # Index for saving the images
         # Subtract the mean from the camera input
         mean_tensor = torch.mean(self.obs["camera"], dim=(2, 3), keepdim=True)
@@ -637,7 +639,7 @@ class FrankaPouringEnv(DirectRLEnv):
         obs_reward_out = torch.tensor(self.obs_reward_out, device = self.device).unsqueeze(1)
         
         # Concatenate observations
-        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
+        self.obs["position"] = torch.cat((relative_pos[:,1].unsqueeze(1), source_rot, self.actions_raw), dim=-1).type(torch.float32)
         # self.obs["position"] = torch.cat((source_rot, self.actions_raw, obs_reward_in, obs_reward_out), dim=-1).type(torch.float32)
 
         # print("Source rotation: "+str(source_rot))
