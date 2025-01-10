@@ -62,7 +62,7 @@ from .pourit_utils.predictor import LiquidPredictor
 class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 10  # 100 timesteps
-    decimation = 15
+    decimation = 1
     action_space = 2
     state_space = 0
     num_channels = 1
@@ -142,8 +142,8 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     )
 
     # camera
-    camera_pos = (1.0, 0.39, 0.5)
-    camera_rot = (-0.3794, -0.1206, -0.0500,  0.9160)
+    camera_pos = (1.0, 0.1, 0.2)
+    camera_rot = (0, 0, 0,  0.1)
     camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=camera_pos, rot=camera_rot, convention="world"),
@@ -184,7 +184,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
     # Spawn position for both the glass, the container and the fluid
     spawn_pos_glass = Gf.Vec3f(0.61, -0.1, 0.25)
     spawn_pos_fluid = spawn_pos_glass + Gf.Vec3f(0.0,0,0.05)
-    spawn_pos_container = Gf.Vec3f(0.61, 0., 0)
+    spawn_pos_container = Gf.Vec3f(0.61, 0., 0.01)
 
     # Set Glass as rigid object
     glass = RigidObjectCfg(
@@ -215,7 +215,7 @@ class FrankaPouringEnvCfg(DirectRLEnvCfg):
         prim_path="/World/envs/env_.*/Container",
         init_state=RigidObjectCfg.InitialStateCfg(pos=spawn_pos_container, rot=[1, 0, 0, 0]),
         spawn=UsdFileCfg(
-            usd_path=f"{CURRENT_PATH}/usd_models/Vase_Cylinder_2.usd",
+            usd_path=f"{CURRENT_PATH}/usd_models/Tall_Glass_5.usd",
             semantic_tags=[("class","Container")],
             scale=(0.01, 0.01, 0.01),
             rigid_props=RigidBodyPropertiesCfg(
@@ -300,7 +300,7 @@ class FrankaPouringEnv(DirectRLEnv):
 
         # Set partial rendering
         Sim_Context = SimulationContext()
-        rendermode = Sim_Context.RenderMode.PARTIAL_RENDERING
+        rendermode = Sim_Context.RenderMode.FULL_RENDERING
         Sim_Context.set_render_mode(mode=rendermode)
 
         # Set translucency to render transparent materials
@@ -420,15 +420,15 @@ class FrankaPouringEnv(DirectRLEnv):
         self.alphas = self.actions_raw[:,1]*self.cfg.action_scale_rot # Rotation angle
         # self.alphas = self.actions_raw.squeeze(1)*self.cfg.action_scale_rot # Rotation angle
 
-        # # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
-        # self.deltas = torch.zeros_like(self.deltas)
-        # self.alphas = torch.zeros_like(self.alphas)
+        # Imposed motions (UNCOMMENT TO POUR ON FIXED TRAJECTORY)
+        self.deltas = torch.zeros_like(self.deltas)
+        self.alphas = torch.zeros_like(self.alphas)
 
         # if (self.counter >= 100) & (self.counter < 120):
         #     self.deltas = torch.ones_like(self.deltas)*torch.tensor([0, 0.03,-0.]) /2   
 
-        # if self.counter == 200:
-        #     self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
+        if self.counter == 200:
+            self.alphas = torch.ones_like(self.alphas)*(-math.pi/2)
         
         # # SAVE PARTICLES (Uncomment to save particles in order to obtain a cleaner initial position)
         # if self.counter == 200:
@@ -549,8 +549,8 @@ class FrankaPouringEnv(DirectRLEnv):
         # Reset the container
         container_init_pos = self._container.data.default_root_state.clone()[env_ids]
         container_init_pos[:,:3] = container_init_pos[:,:3] + self.scene.env_origins[env_ids]
-        lower_bound = torch.tensor([0,-0.05,0],device=self.device)
-        upper_bound = torch.tensor([0,0.05,0],device=self.device)
+        lower_bound = torch.tensor([0,-0.1,0],device=self.device)
+        upper_bound = torch.tensor([0,0.1,0],device=self.device)
         container_init_pos[:,:3] += sample_uniform(lower_bound, upper_bound, container_init_pos[:,:3].shape, self.device) # Randomize
         self._container.write_root_state_to_sim(container_init_pos,env_ids=env_ids)
 
@@ -582,7 +582,7 @@ class FrankaPouringEnv(DirectRLEnv):
         # Extract and save rgb output from camera
         camera_data = self._camera.data.output[self.data_type]
         # Choose whether to save the images or not
-        images_are_being_saved = False
+        images_are_being_saved = True
 
         if images_are_being_saved:
             self.save_image(camera_data/255.0, self.index_image, 0, "rgb")
